@@ -26,6 +26,9 @@ from nighteye.case import (
     set_active_case,
 )
 from nighteye.identity import get_examiner, warn_if_unconfigured
+from nighteye.ingest.executor import execute_ingest_plan
+from nighteye.ingest.opensearch_client import NightEyeOSClient
+from nighteye.ingest.orchestrator import build_ingest_plan
 
 
 # ============================================================
@@ -269,10 +272,79 @@ def case_reopen_cmd(case_id: str) -> None:
 
 
 @main.command()
-def ingest() -> NoReturn:
-    """Ingest forensic evidence (E01 / KAPE zip / EVTX folder / memory)."""
-    click.echo("not yet implemented — see docs/BUILD_PLAN.md D4-D7")
-    sys.exit(2)
+@click.argument("evidence_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--host", "explicit_host", help="Explicitly assign all evidence to this host name.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
+@click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
+def ingest(
+    evidence_path: Path,
+    explicit_host: str | None,
+    yes: bool,
+    os_host: str,
+    os_port: int,
+) -> None:
+    """Ingest forensic evidence (EVTX, EZ Tools Output, etc.) into OpenSearch.
+    
+    Point this at a drive or directory containing your evidence, and NightEye
+    will auto-discover, parse, and stream it to OpenSearch.
+    """
+    case_dir = get_case_dir()
+    if not case_dir:
+        click.echo("Error: No active case. Run `nighteye case activate <id>` first.", err=True)
+        sys.exit(1)
+        
+    case_id = case_dir.name
+    click.echo(f"Building ingest plan for case {case_id}...")
+    
+    plan = build_ingest_plan(
+        root=evidence_path,
+        case_id=case_id,
+        explicit_host=explicit_host,
+    )
+    
+    if not plan.groups:
+        click.echo("No supported evidence files found.", err=True)
+        sys.exit(1)
+        
+    summary = plan.summary()
+    click.echo("\nIngest Plan Summary:")
+    click.echo(f"  Root:          {summary['root']}")
+    click.echo(f"  Hosts found:   {summary['host_count']} ({', '.join(summary['hosts'][:3])}{'...' if summary['host_count'] > 3 else ''})")
+    click.echo(f"  Files:         {summary['total_files']}")
+    click.echo(f"  Data size:     {summary['total_bytes_human']}")
+    click.echo("\nFiles by type:")
+    for ext, count in summary["files_by_type"].items():
+        click.echo(f"  - {ext}: {count}")
+        
+    if summary["skipped"]:
+        click.echo(f"\nSkipping {summary['skipped']} unrecognized files.")
+
+    if not yes:
+        click.echo()
+        click.confirm("Proceed with ingest?", abort=True)
+        
+    # Run the executor asynchronously (wrapping the async client in a synchronous CLI context)
+    import asyncio
+    
+    async def run_ingest() -> None:
+        client = NightEyeOSClient(host=os_host, port=os_port)
+        # Note: the actual OpenSearch client is async, but bulk_index_iter is sync.
+        # So we don't strictly need asyncio if we're not using the async features directly,
+        # but the NightEyeOSClient methods like set_refresh_interval and force_merge are sync 
+        # wrappers using requests. Wait, NightEyeOSClient uses `requests` directly for everything in our implementation!
+        # So we can just call execute_ingest_plan synchronously.
+        pass
+
+    client = NightEyeOSClient(host=os_host, port=os_port)
+    click.echo("\nStarting ingest stream...")
+    result = execute_ingest_plan(plan, client)
+    
+    click.echo("\nIngest Complete!")
+    click.echo(f"  Duration:   {result.duration_s:.1f}s")
+    click.echo(f"  Indexed:    {result.total_docs_indexed} docs")
+    click.echo(f"  Errors:     {result.total_errors}")
+    click.echo(f"  Groups:     {result.groups_completed} completed, {result.groups_failed} failed")
 
 
 @main.command()
