@@ -225,19 +225,109 @@ sequenceDiagram
 | [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) | 3-week build schedule with iterative test points |
 
 ---
+## Current build status
+
+**Updated:** 2026-04-30
+
+### ✅ Built (D1–D2)
+
+| Module | File | Tests | Description |
+|---|---|---|---|
+| Package scaffold | `pyproject.toml`, `__init__.py` | `test_smoke.py` (7) | CLI entry point, version, dependencies |
+| Data models | `models.py` (407 lines) | `test_models.py` (22) | Hypothesis, EvidenceGap, JournalEntry, ConfidenceBreakdown, all enums |
+| SQLite layer | `db.py` (98 lines) | `test_db.py` (6) | WAL mode, foreign keys, transaction helper, retry logic |
+| Schema | `schema/graph.sql` (252 lines) | `test_schema.py` (7) | 10 tables, 18 indexes, CHECK constraints |
+| Audit log | `audit.py` (152 lines) | `test_audit.py` (16) | Sequential ID generation, record/query helpers |
+| Identity | `identity.py` (102 lines) | `test_identity.py` (11) | Examiner resolution: flag → env → config → OS user |
+| Case management | `case.py` (379 lines) | `test_case.py` (42) | Init, list, status, activate, close, reopen, delete |
+| CLI | `cli.py` (315 lines) | `test_smoke.py` | Case subcommands live; ingest/serve/report stubbed |
+
+**Total: 131 tests passing, 0 failures.**
+
+### 🔲 Remaining (D3–D21)
+
+| Day | Module | Status |
+|---|---|---|
+| D3 | Adaptive confidence engine | 🔲 Next up |
+| D4 | Ingest pipeline scaffold + OpenSearch client | 🔲 |
+| D5 | EVTX ingest end-to-end | 🔲 |
+| D6 | Hayabusa + Chainsaw integration | 🔲 |
+| D7 | Volatility 3 + MemProcFS + EZ Tools batch | 🔲 |
+| D8 | Canonical event normalization | 🔲 |
+| D9-D12 | 12 behavior constructors | 🔲 |
+| D13 | MCP server + core tools | 🔲 |
+| D14 | Hypothesis lifecycle + journal | 🔲 |
+| D15-D16 | Explainability portal | 🔲 |
+| D17 | Root cause + report generation | 🔲 |
+| D18 | SRL-2015 full ingest + snapshot | 🔲 |
+| D19 | Synthetic test fixture + CI + accuracy report | 🔲 |
+| D20-D21 | Demo video + submission | 🔲 |
+
+---
+
+## Data ingestion: SRL-2015 and SRL-2018
+
+The primary demonstration dataset is the **SANS SRL APT 2015** (4 hosts)
+with **SRL-2018** (13 hosts) as the scale benchmark.
+
+### For the developer (you)
+
+1. **Download the E01 images** from the SANS course materials or the
+   publicly available links to your **external hard disk** or local
+   storage. Each host produces 1-2 E01 files (split images), totaling
+   ~15-50 GB per host.
+2. **Mount the external disk** to your SIFT VM (USB passthrough in
+   VirtualBox/VMware, or shared folder).
+3. **Run ingest** pointing NightEye at the mounted evidence:
+   ```bash
+   nighteye case init "SRL-2015 Investigation"
+   nighteye ingest /mnt/evidence/SRL-2015/ --host DC01
+   nighteye ingest /mnt/evidence/SRL-2015/ --host RD-01
+   # ... per host
+   ```
+4. NightEye mounts E01s via `ewfmount`, extracts artifacts via its
+   KAPE-equivalent script, parses with EZ Tools, runs Hayabusa, and
+   indexes everything into OpenSearch. First-time ingest: **4-8 hours**
+   for SRL-2015 (4 hosts).
+5. After ingest, capture an **OpenSearch snapshot** for reuse:
+   ```bash
+   nighteye snapshot create --output /mnt/evidence/snapshots/srl-2015.tar.zst
+   ```
+
+### For the judges (three install paths)
+
+NightEye provides three ways for judges to evaluate:
+
+| Path | Time | What's needed |
+|---|---|---|
+| **Quick (recommended)** | ~10 min | Restore the pre-built OpenSearch snapshot. No E01s, no external disk. Just `nighteye snapshot restore srl-2015.tar.zst` and the case is ready. |
+| **BYO (bring your own data)** | ~1 hour | Judges point NightEye at their own triage data (KAPE zips, EVTX folders, memory dumps). Works from local disk or USB. |
+| **Full (raw E01 reingest)** | ~4-8 hours | Judges download SRL-2015 E01s to their disk (external or internal), mount in SIFT VM, run `nighteye ingest`. Full reproducibility. |
+
+**Key points:**
+- The **Quick path** does NOT require an external hard disk. The
+  snapshot tarball (~2-5 GB compressed) ships with the submission or is
+  downloaded from a release URL.
+- The **Full path** requires ~50-100 GB of disk space for the raw
+  images. An external hard disk is convenient but not mandatory — any
+  accessible storage works (internal SSD, NFS mount, shared folder).
+- All three paths produce identical investigation-ready cases. The
+  agent's investigation is deterministic regardless of ingest method.
+
+---
 
 ## Hackathon submission deliverables
 
 | Deliverable | Status |
 |---|---|
-| Public repo (MIT) | repo init pending |
-| Demo video (5 min, with self-correction) | post-build |
-| Architecture diagram | this README + ARCHITECTURE.md |
-| Project description (Devpost) | post-build |
-| Dataset documentation | post-build |
-| Accuracy report | post-build (FOR508 ground-truth comparison on SRL-2015) |
-| Try-It-Out instructions (3 paths) | post-build |
-| Agent execution logs | auto-captured by audit subsystem |
+| Public repo (MIT) | ✅ initialized |
+| Demo video (5 min, with self-correction) | 🔲 post-build |
+| Architecture diagram | ✅ this README + ARCHITECTURE.md |
+| Project description (Devpost) | 🔲 post-build |
+| Dataset documentation | 🔲 post-build |
+| Accuracy report | 🔲 post-build (FOR508 ground-truth comparison on SRL-2015) |
+| Try-It-Out instructions (3 paths) | ✅ documented above |
+| Agent execution logs | 🔲 auto-captured by audit subsystem |
 
 ---
 

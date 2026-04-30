@@ -43,14 +43,27 @@ def test_cli_subcommands_stub() -> None:
 
     This locks the CLI surface so accidentally renaming a command breaks
     the test before it breaks anyone's workflow.
+
+    Note: 'case' is a real group (shows help, exit 0), not a stub.
     """
     from nighteye.cli import main
 
     runner = CliRunner()
-    for cmd in ("case", "ingest", "normalize", "constructors", "serve", "review", "report"):
+    for cmd in ("ingest", "normalize", "constructors", "serve", "review", "report"):
         result = runner.invoke(main, [cmd])
         assert result.exit_code == 2, f"{cmd}: expected exit 2, got {result.exit_code}"
         assert "not yet implemented" in result.output, f"{cmd}: missing stub message"
+
+
+def test_cli_case_group_shows_help() -> None:
+    """The 'case' group shows usage info (not a 'not yet implemented' stub)."""
+    from nighteye.cli import main
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["case"])
+    # Click groups exit 2 when no subcommand is given, but show help
+    assert "Case management" in result.output or "Commands" in result.output
+    assert "not yet implemented" not in result.output
 
 
 def test_console_script_installed() -> None:
