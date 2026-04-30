@@ -35,6 +35,8 @@ def start_server(port: int = 4509, transport: str = "sse") -> None:
     import nighteye.mcp.tools.triage
     import nighteye.mcp.tools.cluster
     import nighteye.mcp.tools.canonical
+    import nighteye.mcp.tools.hypothesis
+    import nighteye.mcp.tools.journal
     
     # Run the server
     if transport == "stdio":
