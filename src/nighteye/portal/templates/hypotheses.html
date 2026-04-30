@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+
+{% block header %}Agent Hypotheses{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-6 py-3 font-medium text-gray-500">Hypothesis ID</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Status</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Tier</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Title</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Techniques</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y">
+            {% for hyp in hypotheses %}
+            <tr class="hover:bg-gray-50 cursor-pointer">
+                <td class="px-6 py-4 font-mono text-cyan-600">{{ hyp.id }}</td>
+                <td class="px-6 py-4">
+                    {% if hyp.status == 'APPROVED' %}
+                    <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-semibold">APPROVED</span>
+                    {% else %}
+                    <span class="px-2 py-1 bg-gray-100 text-gray-800 rounded text-xs font-semibold">{{ hyp.status }}</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    <span class="px-2 py-1 bg-slate-100 text-slate-800 rounded text-xs font-semibold">{{ hyp.tier }}</span>
+                </td>
+                <td class="px-6 py-4 font-medium">{{ hyp.title }}</td>
+                <td class="px-6 py-4 font-mono text-xs text-gray-500">{{ hyp.techniques | join(", ") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "layout.html" %}
+
+{% block header %}Threat Clusters{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+        <h3 class="font-medium text-gray-700">All Detected Behaviors</h3>
+        <div class="space-x-2">
+            <select class="text-sm border-gray-300 rounded px-2 py-1">
+                <option>All Tiers</option>
+                <option>STRONG Only</option>
+                <option>MODERATE+</option>
+            </select>
+        </div>
+    </div>
+    
+    <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-6 py-3 font-medium text-gray-500">Cluster ID</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Host</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Type</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Tier</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Score</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y">
+            {% for cluster in clusters %}
+            <tr class="hover:bg-gray-50 cursor-pointer">
+                <td class="px-6 py-4 font-mono text-cyan-600">{{ cluster.id }}</td>
+                <td class="px-6 py-4 font-medium">{{ cluster.host }}</td>
+                <td class="px-6 py-4">{{ cluster.type }}</td>
+                <td class="px-6 py-4">
+                    {% if cluster.tier == 'STRONG' %}
+                    <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-semibold">STRONG</span>
+                    {% elif cluster.tier == 'MODERATE' %}
+                    <span class="px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-semibold">MODERATE</span>
+                    {% else %}
+                    <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-semibold">{{ cluster.tier }}</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">{{ cluster.score }}/100</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

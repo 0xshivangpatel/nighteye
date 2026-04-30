@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NightEye Portal</title>
+    <!-- TailwindCSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HTMX via CDN -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 h-screen flex overflow-hidden">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-slate-900 text-white flex flex-col">
+        <div class="p-6">
+            <h1 class="text-2xl font-bold text-cyan-400">NightEye</h1>
+            <p class="text-sm text-slate-400 mt-1">Explainability Portal</p>
+        </div>
+        <nav class="flex-1 px-4 space-y-2 mt-4">
+            <a href="/" class="block px-4 py-2 rounded hover:bg-slate-800 transition">Case Overview</a>
+            <a href="/clusters" class="block px-4 py-2 rounded hover:bg-slate-800 transition">Threat Clusters</a>
+            <a href="/hypotheses" class="block px-4 py-2 rounded hover:bg-slate-800 transition">Hypotheses</a>
+            <a href="/graph" class="block px-4 py-2 rounded hover:bg-slate-800 transition">Forensic Graph</a>
+        </nav>
+        <div class="p-4 bg-slate-800 text-xs text-slate-400 text-center">
+            Agent Mode Active
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col overflow-y-auto">
+        <header class="bg-white border-b px-8 py-4 flex items-center justify-between">
+            <h2 class="text-xl font-semibold">{% block header %}Dashboard{% endblock %}</h2>
+            <div class="text-sm text-gray-500">Case ID: <span class="font-mono text-cyan-600">{{ stats.case_id if stats else 'ACTIVE' }}</span></div>
+        </header>
+        
+        <div class="p-8 max-w-7xl mx-auto w-full">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

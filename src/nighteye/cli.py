@@ -386,16 +386,28 @@ def constructors() -> NoReturn:
 
 @main.command()
 @click.option("--port", default=4509, help="MCP server port (default: 4509).")
+@click.option("--portal-port", default=4510, help="Web portal port (default: 4510).")
 @click.option("--stdio", is_flag=True, help="Use stdio transport (required for Claude Code local connection).")
-def serve(port: int, stdio: bool) -> None:
-    """Start the NightEye MCP server for AI Agents."""
+def serve(port: int, portal_port: int, stdio: bool) -> None:
+    """Start the NightEye MCP server and Web Portal."""
     transport = "stdio" if stdio else "sse"
+    
+    from multiprocessing import Process
+    from nighteye.portal.app import start_portal
+    
+    # Start portal in background process
+    portal_proc = Process(target=start_portal, args=(portal_port,), daemon=True)
+    portal_proc.start()
+    
     click.echo(f"Initializing FastMCP Server on port {port} (transport: {transport})...")
+    click.echo(f"Explainability Portal running on http://127.0.0.1:{portal_port}")
     try:
         from nighteye.mcp.server import start_server
         start_server(port, transport=transport)
     except RuntimeError as e:
         sys.exit(1)
+    finally:
+        portal_proc.terminate()
 
 
 @main.command()

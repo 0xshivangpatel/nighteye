@@ -1,0 +1,71 @@
+{% extends "layout.html" %}
+
+{% block header %}Case Overview{% endblock %}
+
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+    <!-- Status Card -->
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Ingestion Status</h3>
+        <div class="space-y-2 text-sm">
+            <div class="flex justify-between"><span class="text-gray-600">Hosts Processed:</span> <span class="font-semibold">{{ stats.hosts }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Artifact Types:</span> <span class="font-semibold">{{ stats.artifact_types }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Anti-Forensics Observed:</span> <span class="font-semibold text-amber-500">Yes</span></div>
+        </div>
+    </div>
+
+    <!-- Agent Activity Card -->
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Agent Hypotheses</h3>
+        <div class="space-y-2 text-sm">
+            <div class="flex justify-between"><span class="text-gray-600">Approved (Conclusive):</span> <span class="font-semibold text-green-600">{{ stats.hypotheses_approved }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Draft (In-Progress):</span> <span class="font-semibold text-blue-600">{{ stats.hypotheses_draft }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Insufficient Evidence:</span> <span class="font-semibold text-amber-500">{{ stats.insufficient }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Rejected (Refuted):</span> <span class="font-semibold text-red-500">{{ stats.rejected }}</span></div>
+        </div>
+    </div>
+
+    <!-- Evidence Gaps Card -->
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Open Evidence Gaps</h3>
+        <div class="text-sm">
+            <div class="p-3 bg-amber-50 rounded border border-amber-100 text-amber-800 mb-2">
+                <span class="font-mono font-semibold text-xs bg-amber-200 px-1 rounded mr-1">GAP-001</span>
+                Missing VPN logs for external IP correlation.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Clusters Overview -->
+<div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100 mb-8">
+    <h3 class="text-gray-800 text-lg font-semibold mb-4">Triage Clusters by Type</h3>
+    <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-4 py-3 font-medium text-gray-500">Behavior Type</th>
+                <th class="px-4 py-3 font-medium text-red-600">STRONG</th>
+                <th class="px-4 py-3 font-medium text-orange-500">MODERATE</th>
+                <th class="px-4 py-3 font-medium text-yellow-500">WEAK</th>
+                <th class="px-4 py-3 font-medium text-gray-400">NOISE</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y">
+            <tr>
+                <td class="px-4 py-3 font-medium">Lateral Movement</td>
+                <td class="px-4 py-3">3</td>
+                <td class="px-4 py-3">5</td>
+                <td class="px-4 py-3">12</td>
+                <td class="px-4 py-3 text-gray-400">47</td>
+            </tr>
+            <tr>
+                <td class="px-4 py-3 font-medium">Persistence</td>
+                <td class="px-4 py-3">2</td>
+                <td class="px-4 py-3">4</td>
+                <td class="px-4 py-3">2</td>
+                <td class="px-4 py-3 text-gray-400">18</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}
