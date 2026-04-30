@@ -229,7 +229,7 @@ sequenceDiagram
 
 **Updated:** 2026-04-30
 
-### ✅ Built (D1–D4)
+### ✅ Built (D1–D9)
 
 | Module | File | Tests | Description |
 |---|---|---|---|
@@ -240,7 +240,7 @@ sequenceDiagram
 | Audit log | `audit.py` (152 lines) | `test_audit.py` (16) | Sequential ID generation, record/query helpers |
 | Identity | `identity.py` (102 lines) | `test_identity.py` (11) | Examiner resolution: flag → env → config → OS user |
 | Case management | `case.py` (379 lines) | `test_case.py` (42) | Init, list, status, activate, close, reopen, delete |
-| CLI | `cli.py` (315 lines) | `test_smoke.py` | Case subcommands live; ingest/serve/report stubbed |
+| CLI | `cli.py` (315 lines) | `test_smoke.py` | Case subcommands live; ingest/normalize live |
 | Confidence engine | `confidence.py` (290 lines) | `test_confidence.py` (35) | Adaptive scoring: 10 factors, 2 penalties, 4 tiers |
 | Causation ladder | `causation.py` (115 lines) | `test_causation_provenance.py` (38) | 7-level causation weights, language detection |
 | Provenance | `provenance.py` (120 lines) | `test_causation_provenance.py` | Weakest-link derivation from audit IDs |
@@ -248,18 +248,23 @@ sequenceDiagram
 | ECS mapping | `ingest/ecs.py` (270 lines) | `test_ingest.py` | Index naming, doc IDs, timestamp normalization, doc builder |
 | Index template | `ingest/index_template.py` (170 lines) | `test_ingest.py` | case-* template with ECS + NightEye fields |
 | OpenSearch client | `ingest/opensearch_client.py` (530 lines) | — (integration) | Bulk indexer, shard breaker, scroll API, refresh mgmt, 50+ host scale |
+| Orchestrator | `ingest/orchestrator.py` | `test_orchestrator.py` | Recursive discovery, KAPE host resolution, Ingest plans |
+| EVTX Parser | `ingest/evtx.py` | `test_evtx.py` | EvtxECmd wrapper + python-evtx fallback, ECS mapping |
+| EZ Tools Parsers | `ingest/parsers/*.py` | `test_parsers.py` | Registry, MFT, Prefetch, Amcache, Shimcache, SRUM to ECS |
+| Ingest Executor | `ingest/executor.py` | `test_smoke.py` | Bulk streaming execution, auto-discovery routing |
+| Hunt Automation | `ingest/hayabusa.py`, `chainsaw.py` | `test_hunt_parsers.py`| Native Sigma execution, JSON parsing to ECS alerts |
+| Memory Ingestion| `ingest/volatility.py`, `memprocfs.py` | `test_memory_parsers.py` | Volatility 3 plugins & MemProcFS bulk extractions |
+| Canonical Core | `canonical/types.py`, `mapper.py` | `test_smoke.py` | Post-ingest normalization of all raw ECS into CanonicalEvents |
+| Constructor Base| `constructors/base.py`, `scoring.py` | `test_constructors.py` | Trigger, signal, counter-evidence framework + bounded tier math |
+| Lateral Movement| `constructors/lateral_movement.py` | `test_constructors.py` | Complete T1021 TA0008 implementation with baseline checks |
 
-**Total: 259 tests passing, 0 failures.**
+**Total: 319 tests passing, 0 failures.**
 
-### 🔲 Remaining (D5–D21)
+### 🔲 Remaining (D10–D21)
 
 | Day | Module | Status |
 |---|---|---|
-| D5 | EVTX ingest end-to-end | 🔲 Next up |
-| D6 | Hayabusa + Chainsaw integration | 🔲 |
-| D7 | Volatility 3 + MemProcFS + EZ Tools batch | 🔲 |
-| D8 | Canonical event normalization | 🔲 |
-| D9-D12 | 12 behavior constructors | 🔲 |
+| D10-D12 | 11 remaining behavior constructors | 🔲 Next up |
 | D13 | MCP server + core tools | 🔲 |
 | D14 | Hypothesis lifecycle + journal | 🔲 |
 | D15-D16 | Explainability portal | 🔲 |
