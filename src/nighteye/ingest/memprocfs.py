@@ -53,13 +53,15 @@ def extract_memprocfs(
     # handle cleanup if desired, or we just rely on OS temp cleanup.
     out_dir = Path(tempfile.mkdtemp(prefix="nighteye_memprocfs_"))
 
-    # Command: MemProcFS -device <file> -forensic 1 -forensic-dir <dir>
-    # Note: Depending on the MemProcFS version, the flags vary.
-    # Modern approach: -device <file> -extract <dir>
+    # Command: MemProcFS -device <file> -forensic 1 -extract <dir> -license
+    # -forensic 1: Enables deep forensic parsing
+    # -license: Accepts the license to enable built-in YARA scanning
     cmd = [
         exe,
         "-device", str(evidence_path),
+        "-forensic", "1",
         "-extract", str(out_dir),
+        "-license",
     ]
 
     logger.info("Extracting artifacts from memory dump %s via MemProcFS...", evidence_path.name)
