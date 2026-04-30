@@ -46,33 +46,40 @@ def _get_case_stats() -> dict:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Case Overview Dashboard."""
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "stats": _get_case_stats()
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"stats": _get_case_stats()}
+    )
 
 
 @app.get("/clusters", response_class=HTMLResponse)
 async def list_clusters(request: Request):
     """View all threat clusters."""
-    return templates.TemplateResponse("clusters.html", {
-        "request": request,
-        "clusters": [
-            {"id": "cluster-001", "type": "Lateral Movement", "tier": "STRONG", "score": 90, "host": "DC01"},
-            {"id": "cluster-002", "type": "Defense Evasion", "tier": "MODERATE", "score": 65, "host": "WKSTN-02"}
-        ]
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="clusters.html",
+        context={
+            "clusters": [
+                {"id": "cluster-001", "type": "Lateral Movement", "tier": "STRONG", "score": 90, "host": "DC01"},
+                {"id": "cluster-002", "type": "Defense Evasion", "tier": "MODERATE", "score": 65, "host": "WKSTN-02"}
+            ]
+        }
+    )
 
 
 @app.get("/hypotheses", response_class=HTMLResponse)
 async def list_hypotheses(request: Request):
     """View all hypotheses."""
-    return templates.TemplateResponse("hypotheses.html", {
-        "request": request,
-        "hypotheses": [
-            {"id": "hyp-001", "status": "APPROVED", "tier": "HIGH", "title": "Lateral movement via PsExec", "techniques": ["T1021.002"]}
-        ]
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="hypotheses.html",
+        context={
+            "hypotheses": [
+                {"id": "hyp-001", "status": "APPROVED", "tier": "HIGH", "title": "Lateral movement via PsExec", "techniques": ["T1021.002"]}
+            ]
+        }
+    )
 
 
 @app.get("/graph", response_class=HTMLResponse)
@@ -85,10 +92,11 @@ async def view_graph(request: Request):
         ADMIN -->|spawned| PSEXEC[psexec.exe]
         PSEXEC -->|connected_to| WKSTN02[WKSTN-02]
     """
-    return templates.TemplateResponse("graph.html", {
-        "request": request,
-        "mermaid_graph": mock_mermaid
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="graph.html",
+        context={"mermaid_graph": mock_mermaid}
+    )
 
 
 def start_portal(port: int = 4510) -> None:
