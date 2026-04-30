@@ -144,6 +144,17 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
                 audit_id=audit_id,
                 use_evtxecmd=True,  # Will fallback to pure-Python if missing
             )
+            
+            # 1b. Hayabusa Alerts
+            from nighteye.ingest.hayabusa import run_hayabusa, is_hayabusa_available
+            if is_hayabusa_available():
+                yield from run_hayabusa(evidence.path, host_name=host_name, case_id=case_id)
+            
+            # 1c. Chainsaw Alerts
+            from nighteye.ingest.chainsaw import run_chainsaw, is_chainsaw_available
+            if is_chainsaw_available():
+                yield from run_chainsaw(evidence.path, host_name=host_name, case_id=case_id)
+                
             continue
 
         # 2. EZ Tools Parsing

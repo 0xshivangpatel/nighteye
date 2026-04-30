@@ -49,7 +49,7 @@ def test_cli_subcommands_stub() -> None:
     from nighteye.cli import main
 
     runner = CliRunner()
-    for cmd in ("ingest", "normalize", "constructors", "serve", "review", "report"):
+    for cmd in ("normalize", "constructors", "serve", "review", "report"):
         result = runner.invoke(main, [cmd])
         assert result.exit_code == 2, f"{cmd}: expected exit 2, got {result.exit_code}"
         assert "not yet implemented" in result.output, f"{cmd}: missing stub message"
