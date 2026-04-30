@@ -348,10 +348,33 @@ def ingest(
 
 
 @main.command()
-def normalize() -> NoReturn:
-    """Run canonical event normalization pass."""
-    click.echo("not yet implemented — see docs/BUILD_PLAN.md D8")
-    sys.exit(2)
+@click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
+@click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
+def normalize(os_host: str, os_port: int) -> None:
+    """Run canonical event normalization pass.
+    
+    Reads raw evidence indices for the active case, maps them to strictly-typed
+    CanonicalEvents, and indexes them into canonical host indices for downstream
+    behavior construction.
+    """
+    case_dir = get_case_dir()
+    if not case_dir:
+        click.echo("Error: No active case. Run `nighteye case activate <id>` first.", err=True)
+        sys.exit(1)
+        
+    case_id = case_dir.name
+    click.echo(f"Starting Canonical Normalization Pass for case {case_id}...")
+    
+    from nighteye.canonical.engine import run_normalization_pass
+    from nighteye.ingest.opensearch_client import NightEyeOSClient
+    
+    client = NightEyeOSClient(host=os_host, port=os_port)
+    stats = run_normalization_pass(client, case_id)
+    
+    click.echo("\nNormalization Complete!")
+    click.echo(f"  Raw docs scanned:  {stats['raw_docs_scanned']}")
+    click.echo(f"  Canonical events:  {stats['canonical_docs_created']}")
+    click.echo(f"  Errors:            {stats['errors']}")
 
 
 @main.command()

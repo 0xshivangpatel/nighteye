@@ -476,51 +476,83 @@ class NightEyeOSClient:
 
     def bulk_index_iter(
         self,
-        index: str,
-        docs_iter,
+        index_name: str,
+        documents,
         doc_id_fn=None,
-    ):
+        dynamic_routing: bool = False,
+    ) -> tuple[int, int]:
         """Streaming bulk index — accepts an iterator of documents.
 
-        Memory-efficient: processes documents in batches without loading
-        the entire dataset into memory. Critical for large hosts where
-        a single EVTX folder may contain 500K+ events.
-
         Args:
-            index: Target index name.
-            docs_iter: Iterable of document dicts.
+            index_name: Target index name (default if dynamic routing is not used).
+            documents: Iterable of document dicts (or tuples of (index, doc) if dynamic_routing=True).
             doc_id_fn: Optional callable(doc) -> str that returns a
                        deterministic document ID for idempotency.
+            dynamic_routing: If True, documents iterator must yield (target_index, doc) tuples.
 
-        Yields:
-            Per-batch result dicts with keys: indexed, errors, batch_num.
+        Returns:
+            Tuple of (total_indexed, total_errors).
         """
         self._require_connection()
         assert self._client is not None
 
         batch: list[dict[str, Any]] = []
         batch_ids: list[str] | None = [] if doc_id_fn else None
-        batch_num = 0
+        
+        total_indexed = 0
+        total_errors = 0
 
-        for doc in docs_iter:
-            batch.append(doc)
-            if doc_id_fn and batch_ids is not None:
-                batch_ids.append(doc_id_fn(doc))
+        for item in documents:
+            if dynamic_routing:
+                target_index, doc = item
+                action = {"_index": target_index, "_source": doc}
+                if doc_id_fn and batch_ids is not None:
+                    action["_id"] = doc_id_fn(doc)
+                batch.append(action)
+            else:
+                batch.append(item)
+                if doc_id_fn and batch_ids is not None:
+                    batch_ids.append(doc_id_fn(item))
 
             if len(batch) >= self._config.bulk_batch_size:
-                result = self.bulk_index(index, batch, batch_ids)
-                result["batch_num"] = batch_num
-                yield result
+                if dynamic_routing:
+                    # In dynamic routing, the batch is already pre-formatted actions
+                    try:
+                        success, errors = helpers.bulk(
+                            self._client, batch, raise_on_error=False, raise_on_exception=False
+                        )
+                        total_indexed += success
+                        total_errors += len(errors) if isinstance(errors, list) else 0
+                    except Exception as exc:
+                        logger.error("Dynamic bulk batch failed: %s", exc)
+                        total_errors += len(batch)
+                else:
+                    result = self.bulk_index(index_name, batch, batch_ids)
+                    total_indexed += result["indexed"]
+                    total_errors += result["errors"]
+                
                 batch = []
                 if batch_ids is not None:
                     batch_ids = []
-                batch_num += 1
 
         # Flush remaining
         if batch:
-            result = self.bulk_index(index, batch, batch_ids)
-            result["batch_num"] = batch_num
-            yield result
+            if dynamic_routing:
+                try:
+                    success, errors = helpers.bulk(
+                        self._client, batch, raise_on_error=False, raise_on_exception=False
+                    )
+                    total_indexed += success
+                    total_errors += len(errors) if isinstance(errors, list) else 0
+                except Exception as exc:
+                    logger.error("Dynamic bulk batch failed: %s", exc)
+                    total_errors += len(batch)
+            else:
+                result = self.bulk_index(index_name, batch, batch_ids)
+                total_indexed += result["indexed"]
+                total_errors += result["errors"]
+
+        return total_indexed, total_errors
 
     # --------------------------------------------------------
     # Lifecycle
