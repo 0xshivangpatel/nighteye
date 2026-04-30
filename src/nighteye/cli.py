@@ -148,8 +148,8 @@ def case_init(
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  1. Mount your evidence drive (e.g. /mnt/usb) OR copy into: {info.case_dir}/evidence/")
-    click.echo("  2. Ingest:             nighteye ingest /mnt/usb/evidence   (D4-D7)")
-    click.echo("  3. Serve MCP+portal:   nighteye serve                      (D13-D16)")
+    click.echo("  2. Ingest:             nighteye ingest /mnt/usb/evidence")
+    click.echo("  3. Serve MCP+portal:   nighteye serve")
 
 
 @case.command("list")
