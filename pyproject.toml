@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nighteye"
+version = "0.1.0"
+description = "Autonomous AI-driven DFIR agent for the SANS FindEvil! Hackathon"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Shivang Bhargava" },
+]
+keywords = ["dfir", "incident-response", "forensics", "mcp", "claude", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "opensearch-py>=2.5",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "mcp>=1.0",
+    "python-dateutil>=2.8",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+nighteye = "nighteye.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shivangbhargava/nighteye"
+Repository = "https://github.com/shivangbhargava/nighteye"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nighteye"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length (formatter handles)
+    "SIM105", # contextlib.suppress
+    "SIM108", # ternary
+    "B008",   # function call in default argument (FastAPI/typer pattern)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["src/nighteye"]
+branch = true
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
