@@ -157,7 +157,24 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
                 
             continue
 
-        # 2. EZ Tools Parsing
+        # 2. Memory Dumps
+        if artifact_type == EvidenceType.MEMORY_DUMP:
+            from nighteye.ingest.volatility import run_volatility, is_volatility_available
+            if is_volatility_available():
+                yield from run_volatility(evidence.path, host_name=host_name, case_id=case_id)
+                
+            from nighteye.ingest.memprocfs import extract_memprocfs, is_memprocfs_available
+            if is_memprocfs_available():
+                # MemProcFS extracts files, it doesn't yield docs directly.
+                # The extracted files will need to be ingested via a separate recursive ingest plan.
+                # To keep streaming simple, we just log the extracted directory and
+                # let the CLI handle recursive plans if needed, or we just yield a metadata doc.
+                for ext_dir in extract_memprocfs(evidence.path):
+                    logger.info("MemProcFS extracted memory to %s. Run `nighteye ingest` on this directory to process the artifacts.", ext_dir)
+                    
+            continue
+
+        # 3. EZ Tools Parsing
         if not is_tool_available(artifact_type):
             logger.warning("Required EZ Tool not found for %s. Skipping %s.", artifact_type.value, evidence.path.name)
             continue
