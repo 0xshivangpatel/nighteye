@@ -385,10 +385,15 @@ def constructors() -> NoReturn:
 
 
 @main.command()
-def serve() -> NoReturn:
-    """Start MCP server (4509) and portal (4510)."""
-    click.echo("not yet implemented — see docs/BUILD_PLAN.md D13-D16")
-    sys.exit(2)
+@click.option("--port", default=4509, help="MCP server port (default: 4509).")
+def serve(port: int) -> None:
+    """Start the NightEye MCP server for AI Agents."""
+    click.echo(f"Initializing FastMCP Server on port {port}...")
+    try:
+        from nighteye.mcp.server import start_server
+        start_server(port)
+    except RuntimeError as e:
+        sys.exit(1)
 
 
 @main.command()
