@@ -229,7 +229,7 @@ sequenceDiagram
 
 **Updated:** 2026-04-30
 
-### ✅ Built (D1–D2)
+### ✅ Built (D1–D4)
 
 | Module | File | Tests | Description |
 |---|---|---|---|
@@ -241,16 +241,21 @@ sequenceDiagram
 | Identity | `identity.py` (102 lines) | `test_identity.py` (11) | Examiner resolution: flag → env → config → OS user |
 | Case management | `case.py` (379 lines) | `test_case.py` (42) | Init, list, status, activate, close, reopen, delete |
 | CLI | `cli.py` (315 lines) | `test_smoke.py` | Case subcommands live; ingest/serve/report stubbed |
+| Confidence engine | `confidence.py` (290 lines) | `test_confidence.py` (35) | Adaptive scoring: 10 factors, 2 penalties, 4 tiers |
+| Causation ladder | `causation.py` (115 lines) | `test_causation_provenance.py` (38) | 7-level causation weights, language detection |
+| Provenance | `provenance.py` (120 lines) | `test_causation_provenance.py` | Weakest-link derivation from audit IDs |
+| Evidence dispatch | `ingest/dispatch.py` (180 lines) | `test_ingest.py` (48) | 13 evidence types, directory scanning |
+| ECS mapping | `ingest/ecs.py` (270 lines) | `test_ingest.py` | Index naming, doc IDs, timestamp normalization, doc builder |
+| Index template | `ingest/index_template.py` (170 lines) | `test_ingest.py` | case-* template with ECS + NightEye fields |
+| OpenSearch client | `ingest/opensearch_client.py` (530 lines) | — (integration) | Bulk indexer, shard breaker, scroll API, refresh mgmt, 50+ host scale |
 
-**Total: 131 tests passing, 0 failures.**
+**Total: 259 tests passing, 0 failures.**
 
-### 🔲 Remaining (D3–D21)
+### 🔲 Remaining (D5–D21)
 
 | Day | Module | Status |
 |---|---|---|
-| D3 | Adaptive confidence engine | 🔲 Next up |
-| D4 | Ingest pipeline scaffold + OpenSearch client | 🔲 |
-| D5 | EVTX ingest end-to-end | 🔲 |
+| D5 | EVTX ingest end-to-end | 🔲 Next up |
 | D6 | Hayabusa + Chainsaw integration | 🔲 |
 | D7 | Volatility 3 + MemProcFS + EZ Tools batch | 🔲 |
 | D8 | Canonical event normalization | 🔲 |

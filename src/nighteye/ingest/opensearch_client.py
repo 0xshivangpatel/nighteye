@@ -290,6 +290,242 @@ class NightEyeOSClient:
         )
         return [hit["_source"] for hit in result["hits"]["hits"]]
 
+    # --------------------------------------------------------
+    # Scale features for 50+ host deployments
+    # --------------------------------------------------------
+
+    def scroll_search(
+        self,
+        index: str,
+        query: dict[str, Any],
+        scroll_timeout: str = "2m",
+        page_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Paginated search using scroll API for large result sets.
+
+        Use this instead of ``search()`` when you expect more than 10K
+        results. Automatically paginates through all matching documents.
+
+        For SRL-2018 scale (13 hosts × ~50K events each = ~650K docs),
+        scroll avoids deep pagination performance cliffs.
+
+        Args:
+            index: Index name or wildcard pattern (e.g. ``case-inc-*``).
+            query: OpenSearch query DSL body.
+            scroll_timeout: How long to keep the scroll context alive
+                between pages. Default "2m".
+            page_size: Number of documents per page. Default 1000.
+
+        Returns:
+            All matching ``_source`` dicts (may be very large — use
+            ``scroll_search_iter`` for memory-efficient streaming).
+        """
+        all_hits: list[dict[str, Any]] = []
+        for page in self.scroll_search_iter(index, query, scroll_timeout, page_size):
+            all_hits.extend(page)
+        return all_hits
+
+    def scroll_search_iter(
+        self,
+        index: str,
+        query: dict[str, Any],
+        scroll_timeout: str = "2m",
+        page_size: int = 1000,
+    ):
+        """Iterator version of scroll_search — yields pages of hits.
+
+        Memory-efficient: only one page of ``page_size`` docs is in
+        memory at a time.
+
+        Yields:
+            Lists of ``_source`` dicts, one list per scroll page.
+        """
+        self._require_connection()
+        assert self._client is not None
+
+        result = self._client.search(
+            index=index,
+            body={"query": query, "size": page_size},
+            scroll=scroll_timeout,
+        )
+
+        scroll_id = result.get("_scroll_id")
+        hits = result["hits"]["hits"]
+
+        while hits:
+            yield [h["_source"] for h in hits]
+
+            if not scroll_id:
+                break
+
+            result = self._client.scroll(
+                scroll_id=scroll_id,
+                scroll=scroll_timeout,
+            )
+            scroll_id = result.get("_scroll_id")
+            hits = result["hits"]["hits"]
+
+        # Clean up scroll context
+        if scroll_id:
+            try:
+                self._client.clear_scroll(scroll_id=scroll_id)
+            except Exception:
+                pass  # best effort cleanup
+
+    def set_refresh_interval(
+        self,
+        index: str,
+        interval: str = "1s",
+    ) -> None:
+        """Set the refresh interval for an index or wildcard pattern.
+
+        During ingest, set to "30s" or "-1" (disabled) for throughput.
+        After ingest, set back to "1s" for search responsiveness.
+
+        For 50+ host ingests, disabling refresh during bulk indexing
+        can improve throughput by 2-3x.
+
+        Args:
+            index: Index name or wildcard pattern (e.g. ``case-inc-*``).
+            interval: Refresh interval. "1s", "30s", or "-1" (disabled).
+        """
+        self._require_connection()
+        assert self._client is not None
+        self._client.indices.put_settings(
+            index=index,
+            body={"index": {"refresh_interval": interval}},
+        )
+        logger.info("Set refresh_interval=%s for %s", interval, index)
+
+    def force_merge(self, index: str, max_segments: int = 1) -> None:
+        """Force merge index segments after ingest completes.
+
+        Reduces segment count for faster queries. Only call after
+        all ingest for an index is complete (expensive operation).
+
+        Args:
+            index: Index name or wildcard pattern.
+            max_segments: Target number of segments per shard.
+        """
+        self._require_connection()
+        assert self._client is not None
+        self._client.indices.forcemerge(
+            index=index,
+            max_num_segments=max_segments,
+        )
+        logger.info("Force merged %s to %d segments", index, max_segments)
+
+    def list_case_indices(self, case_id: str) -> list[dict[str, Any]]:
+        """List all indices for a case with doc counts and sizes.
+
+        For a 50-host case with 10 artifact types each, this returns
+        ~500 index entries. Useful for ingest progress tracking.
+
+        Args:
+            case_id: Case ID (will be lowercased and sanitized).
+
+        Returns:
+            List of dicts with keys: index, docs_count, size_bytes.
+        """
+        self._require_connection()
+        assert self._client is not None
+
+        pattern = f"case-{case_id.lower().replace(' ', '-')}*"
+        try:
+            cat_result = self._client.cat.indices(
+                index=pattern,
+                format="json",
+                h="index,docs.count,store.size",
+            )
+            results = []
+            for entry in cat_result:
+                results.append({
+                    "index": entry.get("index", ""),
+                    "docs_count": int(entry.get("docs.count", 0)),
+                    "size": entry.get("store.size", "0b"),
+                })
+            return sorted(results, key=lambda r: r["index"])
+        except Exception:
+            return []
+
+    def ingest_stats(self, case_id: str) -> dict[str, Any]:
+        """Get aggregate ingest statistics for a case.
+
+        Returns:
+            Dict with: total_indices, total_docs, hosts (list of
+            host names with per-host doc counts).
+        """
+        indices = self.list_case_indices(case_id)
+        total_docs = sum(i["docs_count"] for i in indices)
+
+        # Extract host names from index names
+        # Pattern: case-{case_id}-{artifact_type}-{host}
+        hosts: dict[str, int] = {}
+        for idx_info in indices:
+            parts = idx_info["index"].split("-")
+            if len(parts) >= 4:
+                host = parts[-1]
+                hosts[host] = hosts.get(host, 0) + idx_info["docs_count"]
+
+        return {
+            "total_indices": len(indices),
+            "total_docs": total_docs,
+            "hosts": hosts,
+            "indices": indices,
+        }
+
+    def bulk_index_iter(
+        self,
+        index: str,
+        docs_iter,
+        doc_id_fn=None,
+    ):
+        """Streaming bulk index — accepts an iterator of documents.
+
+        Memory-efficient: processes documents in batches without loading
+        the entire dataset into memory. Critical for large hosts where
+        a single EVTX folder may contain 500K+ events.
+
+        Args:
+            index: Target index name.
+            docs_iter: Iterable of document dicts.
+            doc_id_fn: Optional callable(doc) -> str that returns a
+                       deterministic document ID for idempotency.
+
+        Yields:
+            Per-batch result dicts with keys: indexed, errors, batch_num.
+        """
+        self._require_connection()
+        assert self._client is not None
+
+        batch: list[dict[str, Any]] = []
+        batch_ids: list[str] | None = [] if doc_id_fn else None
+        batch_num = 0
+
+        for doc in docs_iter:
+            batch.append(doc)
+            if doc_id_fn and batch_ids is not None:
+                batch_ids.append(doc_id_fn(doc))
+
+            if len(batch) >= self._config.bulk_batch_size:
+                result = self.bulk_index(index, batch, batch_ids)
+                result["batch_num"] = batch_num
+                yield result
+                batch = []
+                if batch_ids is not None:
+                    batch_ids = []
+                batch_num += 1
+
+        # Flush remaining
+        if batch:
+            result = self.bulk_index(index, batch, batch_ids)
+            result["batch_num"] = batch_num
+            yield result
+
+    # --------------------------------------------------------
+    # Lifecycle
+    # --------------------------------------------------------
+
     def delete_index(self, index: str) -> bool:
         """Delete an index. Returns True if deleted, False if not found."""
         self._require_connection()
