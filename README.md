@@ -302,4 +302,4 @@ MIT. See `LICENSE` once repo is initialized.
 
 ## Contact
 
-Solo build by Shivang Bhargava for the SANS FindEvil! Hackathon 2026.
+Solo build by Shivang Patel (<shivang092003@gmail.com>) for the SANS FindEvil! Hackathon 2026.

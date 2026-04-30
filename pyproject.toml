@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "Shivang Bhargava" },
+    { name = "Shivang Patel", email = "shivang092003@gmail.com" },
 ]
 keywords = ["dfir", "incident-response", "forensics", "mcp", "claude", "agent"]
 classifiers = [
