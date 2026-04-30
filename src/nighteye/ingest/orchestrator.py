@@ -1,0 +1,359 @@
+"""Ingest orchestrator — plug-and-play evidence ingestion.
+
+Point NightEye at a directory (external hard disk, KAPE output, etc.)
+and it auto-discovers all evidence, detects file types, resolves host
+names from directory structure, and streams everything into OpenSearch.
+
+Usage::
+
+    nighteye case init "SRL-2015 Investigation"
+    nighteye ingest /mnt/evidence/SRL-2015/
+    # That's it. NightEye handles the rest.
+
+The orchestrator:
+1. Recursively scans the root path for evidence files
+2. Auto-detects host names from directory structure
+3. Groups evidence by host and artifact type
+4. Routes each to the appropriate parser pipeline
+5. Streams documents into OpenSearch with progress reporting
+6. Manages index lifecycle (refresh interval, force merge)
+7. Updates case metadata with ingest statistics
+
+References:
+    - docs/ARCHITECTURE.md § 4 (Layer 1: Wide Evidence Ingestion)
+    - docs/BUILD_PLAN.md D5 (EVTX ingest end-to-end)
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from nighteye.ingest.dispatch import (
+    DetectedEvidence,
+    EvidenceType,
+    detect_evidence_type,
+)
+from nighteye.ingest.ecs import make_index_name
+
+__all__ = [
+    "IngestPlan",
+    "IngestGroup",
+    "IngestResult",
+    "build_ingest_plan",
+    "resolve_host_name",
+]
+
+logger = logging.getLogger("nighteye.ingest")
+
+
+# ============================================================
+# Common host directory name patterns in forensic images
+# ============================================================
+
+# Patterns that indicate a host-level directory
+_HOST_DIR_PATTERNS: list[re.Pattern] = [
+    re.compile(r"^(?:WKSTN|WS|DC|SRV|PC|HOST|SERVER|DESKTOP|LAPTOP)[-_]?\d*", re.I),
+    re.compile(r"^[A-Z]{2,10}[-_]\d{1,4}$", re.I),  # DC-01, SRV_003
+    re.compile(r"^(?:C|D|E|F)_drive$", re.I),         # Mounted drive labels
+    re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"),  # IP-named dirs
+]
+
+# Directories that are NOT hosts (skip these for host resolution)
+_NON_HOST_DIRS: frozenset[str] = frozenset({
+    "c", "d", "e", "f",  # bare drive letters
+    "windows", "system32", "users", "programdata",
+    "program files", "program files (x86)",
+    "appdata", "local", "roaming", "temp",
+    "evidence", "triage", "kape", "output", "results",
+    "logs", "evtx", "registry", "memory", "prefetch",
+    "timeline", "filesystem", "artifacts",
+    "winevt", "config", "regback",
+    # Common SRL / FOR508 structure dirs
+    "c_drive", "exports", "mounted",
+})
+
+# KAPE / triage tool output directory markers
+_TRIAGE_MARKERS: frozenset[str] = frozenset({
+    "c", "c_drive", "filesystem", "eventlogs",
+    "registry", "prefetch", "amcache", "shimcache",
+    "srum", "mft", "usnjrnl",
+})
+
+
+# ============================================================
+# Data structures
+# ============================================================
+
+
+@dataclass
+class IngestGroup:
+    """A group of evidence files for a single host + artifact type."""
+    host: str
+    artifact_type: EvidenceType
+    files: list[DetectedEvidence] = field(default_factory=list)
+    index_name: str = ""
+    doc_count: int = 0
+    status: str = "pending"  # pending | ingesting | done | failed
+    error: str = ""
+    duration_ms: int = 0
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(f.size_bytes for f in self.files)
+
+
+@dataclass
+class IngestPlan:
+    """Complete ingest plan for a directory of evidence.
+
+    Built by ``build_ingest_plan()`` before ingest begins. Shows what
+    will be ingested, from where, into which indices.
+    """
+    root: Path
+    case_id: str
+    groups: list[IngestGroup] = field(default_factory=list)
+    skipped: list[DetectedEvidence] = field(default_factory=list)
+    total_bytes: int = 0
+    host_count: int = 0
+    auto_detected: bool = True
+
+    def summary(self) -> dict[str, Any]:
+        """Human-readable summary for CLI output."""
+        hosts = sorted(set(g.host for g in self.groups))
+        type_counts: dict[str, int] = {}
+        for g in self.groups:
+            key = g.artifact_type.value
+            type_counts[key] = type_counts.get(key, 0) + len(g.files)
+
+        return {
+            "root": str(self.root),
+            "case_id": self.case_id,
+            "hosts": hosts,
+            "host_count": len(hosts),
+            "groups": len(self.groups),
+            "files_by_type": type_counts,
+            "total_files": sum(len(g.files) for g in self.groups),
+            "total_bytes": self.total_bytes,
+            "total_bytes_human": _human_bytes(self.total_bytes),
+            "skipped": len(self.skipped),
+        }
+
+
+@dataclass
+class IngestResult:
+    """Result of executing an ingest plan."""
+    plan: IngestPlan
+    total_docs_indexed: int = 0
+    total_errors: int = 0
+    duration_s: float = 0.0
+    groups_completed: int = 0
+    groups_failed: int = 0
+
+
+# ============================================================
+# Host name resolution
+# ============================================================
+
+
+def resolve_host_name(
+    evidence_path: Path,
+    root: Path,
+    explicit_host: str | None = None,
+) -> str:
+    """Resolve the host name for an evidence file.
+
+    Resolution order:
+    1. Explicit ``--host`` flag (always wins)
+    2. KAPE-style triage output structure detection
+    3. Directory name heuristics (look for host-like parent dirs)
+    4. Fallback to the root directory name
+
+    Common forensic directory structures detected:
+    - ``/evidence/DC01/C/Windows/System32/winevt/Logs/Security.evtx``
+      → host = "DC01"
+    - ``/kape_output/DC01/filesystem/C/...`` → host = "DC01"
+    - ``/SRL-2015/DC01/...`` → host = "DC01"
+    - ``/evidence/10.0.0.5/...`` → host = "10.0.0.5"
+
+    Args:
+        evidence_path: Path to the evidence file.
+        root: Root directory of the ingest scan.
+        explicit_host: If provided, use this host name directly.
+
+    Returns:
+        Resolved host name (lowercased, sanitized).
+    """
+    if explicit_host:
+        return _sanitize_host(explicit_host)
+
+    # Get the relative path from root to the evidence file
+    try:
+        rel = evidence_path.relative_to(root)
+    except ValueError:
+        rel = evidence_path
+
+    parts = list(rel.parts)
+
+    # Strategy 1: Look for KAPE/triage structure markers
+    # e.g., DC01/C/Windows/... or DC01/filesystem/C/...
+    for i, part in enumerate(parts):
+        lower = part.lower()
+        if lower in _TRIAGE_MARKERS and i > 0:
+            # The directory BEFORE the triage marker is likely the host
+            candidate = parts[i - 1]
+            if _is_host_like(candidate):
+                return _sanitize_host(candidate)
+
+    # Strategy 2: Look for host-like directory names in the path
+    for part in parts:
+        if _is_host_like(part):
+            return _sanitize_host(part)
+
+    # Strategy 3: First non-root directory
+    if len(parts) >= 2:
+        candidate = parts[0]
+        if candidate.lower() not in _NON_HOST_DIRS:
+            return _sanitize_host(candidate)
+
+    # Fallback: root directory name
+    return _sanitize_host(root.name) if root.name else "unknown-host"
+
+
+def _is_host_like(name: str) -> bool:
+    """Check if a directory name looks like a hostname."""
+    lower = name.lower()
+
+    # Skip known non-host directories
+    if lower in _NON_HOST_DIRS:
+        return False
+
+    # Check against known host patterns
+    for pattern in _HOST_DIR_PATTERNS:
+        if pattern.match(name):
+            return True
+
+    # Heuristic: short alphanumeric with at least one letter and one digit
+    if 2 <= len(name) <= 20:
+        has_alpha = any(c.isalpha() for c in name)
+        has_digit = any(c.isdigit() for c in name)
+        if has_alpha and has_digit and re.match(r'^[\w-]+$', name):
+            return True
+
+    return False
+
+
+def _sanitize_host(name: str) -> str:
+    """Sanitize a host name for use in index names."""
+    clean = name.lower().strip()
+    clean = re.sub(r'[^a-z0-9\-]', '-', clean)
+    clean = re.sub(r'-+', '-', clean).strip('-')
+    return clean or "unknown-host"
+
+
+# ============================================================
+# Ingest plan builder
+# ============================================================
+
+
+def build_ingest_plan(
+    root: Path,
+    case_id: str,
+    explicit_host: str | None = None,
+    exclude_types: set[EvidenceType] | None = None,
+) -> IngestPlan:
+    """Scan a directory and build a complete ingest plan.
+
+    This is the "plug and play" entry point: point at a directory with
+    100-200GB of forensic data and it figures out everything.
+
+    Args:
+        root: Root directory to scan (external hard disk, KAPE output, etc.)
+        case_id: Case ID for index naming.
+        explicit_host: If provided, all evidence is attributed to this host.
+            Otherwise, hosts are auto-detected from directory structure.
+        exclude_types: Evidence types to skip (e.g. UNKNOWN).
+
+    Returns:
+        An IngestPlan ready for execution.
+    """
+    exclude = exclude_types or {EvidenceType.UNKNOWN}
+    plan = IngestPlan(root=root, case_id=case_id)
+
+    if not root.exists():
+        logger.error("Evidence path does not exist: %s", root)
+        return plan
+
+    # Phase 1: Discover all evidence files
+    discovered: list[DetectedEvidence] = []
+
+    if root.is_file():
+        detected = detect_evidence_type(root)
+        discovered.append(detected)
+    else:
+        # Recursive scan
+        for item in sorted(root.rglob("*")):
+            if item.is_file():
+                detected = detect_evidence_type(item)
+                discovered.append(detected)
+
+    # Phase 2: Group by host + artifact type
+    groups_map: dict[tuple[str, EvidenceType], IngestGroup] = {}
+
+    for evidence in discovered:
+        if evidence.evidence_type in exclude:
+            plan.skipped.append(evidence)
+            continue
+
+        host = resolve_host_name(evidence.path, root, explicit_host)
+        key = (host, evidence.evidence_type)
+
+        if key not in groups_map:
+            index_name = make_index_name(
+                case_id, evidence.evidence_type.value, host
+            )
+            groups_map[key] = IngestGroup(
+                host=host,
+                artifact_type=evidence.evidence_type,
+                index_name=index_name,
+            )
+
+        groups_map[key].files.append(evidence)
+
+    # Phase 3: Build the plan
+    plan.groups = sorted(
+        groups_map.values(),
+        key=lambda g: (g.host, g.artifact_type.value),
+    )
+    plan.total_bytes = sum(g.total_bytes for g in plan.groups)
+    plan.host_count = len(set(g.host for g in plan.groups))
+    plan.auto_detected = explicit_host is None
+
+    logger.info(
+        "Ingest plan: %d hosts, %d groups, %d files, %s",
+        plan.host_count,
+        len(plan.groups),
+        sum(len(g.files) for g in plan.groups),
+        _human_bytes(plan.total_bytes),
+    )
+
+    return plan
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+
+def _human_bytes(n: int) -> str:
+    """Convert bytes to human-readable string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n = int(n / 1024)
+    return f"{n:.1f} PB"
