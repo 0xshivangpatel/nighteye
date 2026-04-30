@@ -386,12 +386,14 @@ def constructors() -> NoReturn:
 
 @main.command()
 @click.option("--port", default=4509, help="MCP server port (default: 4509).")
-def serve(port: int) -> None:
+@click.option("--stdio", is_flag=True, help="Use stdio transport (required for Claude Code local connection).")
+def serve(port: int, stdio: bool) -> None:
     """Start the NightEye MCP server for AI Agents."""
-    click.echo(f"Initializing FastMCP Server on port {port}...")
+    transport = "stdio" if stdio else "sse"
+    click.echo(f"Initializing FastMCP Server on port {port} (transport: {transport})...")
     try:
         from nighteye.mcp.server import start_server
-        start_server(port)
+        start_server(port, transport=transport)
     except RuntimeError as e:
         sys.exit(1)
 
