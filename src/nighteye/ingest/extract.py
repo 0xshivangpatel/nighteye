@@ -33,19 +33,20 @@ def extract_archives(target_dir: Path) -> list[Path]:
     image_exts = {".e01", ".raw", ".dd"}
     
     if target_dir.is_file():
-        files_to_check = [target_dir]
+        targets = [target_dir] if target_dir.suffix.lower() in (archive_exts | image_exts) else []
     else:
-        files_to_check = [p for p in target_dir.rglob("*") if p.is_file()]
-
-    # Filter to only supported archives and images
-    targets = [f for f in files_to_check if f.suffix.lower() in archive_exts or f.suffix.lower() in image_exts]
+        # Targeted scanning is much faster than rglob("*") on slow HDDs
+        targets = []
+        for ext in (archive_exts | image_exts):
+            targets.extend(list(target_dir.rglob(f"*{ext}")))
+            targets.extend(list(target_dir.rglob(f"*{ext.upper()}")))
     
     if not targets:
         return []
 
     try:
         from tqdm import tqdm
-        target_iter = tqdm(targets, desc="Unzipping Evidence", unit="file", leave=False)
+        target_iter = tqdm(targets, desc="Unzipping Evidence", unit="file", leave=True)
     except ImportError:
         target_iter = targets
 
