@@ -48,6 +48,7 @@ __all__ = [
     "IngestResult",
     "build_ingest_plan",
     "resolve_host_name",
+    "ingest_evidence",
 ]
 
 logger = logging.getLogger("nighteye.ingest")
@@ -365,6 +366,65 @@ def build_ingest_plan(
 # ============================================================
 # Helpers
 # ============================================================
+
+
+def ingest_evidence(
+    evidence_dir: str,
+    case_id: str,
+    examiner: str,
+    tool_filter: str | None = None,
+) -> dict[str, Any]:
+    """High-level wrapper for the entire ingest process.
+
+    This orchestrates:
+    1. Archive extraction (E01, ZIP, 7z)
+    2. Evidence discovery and type detection
+    3. Host name resolution
+    4. Parallel ingestion execution
+
+    Args:
+        evidence_dir: Directory to scan for evidence
+        case_id: ID of the case to ingest into
+        examiner: Name of the examiner
+        tool_filter: Optional filter for specific artifact types
+
+    Returns:
+        Dictionary with ingest statistics
+    """
+    from nighteye.ingest.executor import execute_ingest_plan
+    from nighteye.ingest.extract import extract_archives
+
+    evidence_path = Path(evidence_dir)
+
+    # 1. Extract archives (always recursive for internal safety)
+    extractions = extract_archives(evidence_path, recursive=True)
+    roots = [evidence_path] + extractions
+
+    # 2. Build plan
+    plan = build_ingest_plan(
+        roots=roots,
+        case_id=case_id,
+        recursive=True,
+    )
+
+    # 3. Filter by tool if requested
+    if tool_filter:
+        plan.groups = [g for g in plan.groups if g.artifact_type.value == tool_filter]
+
+    # 4. Execute plan
+    stats = {
+        "files_processed": 0,
+        "documents_indexed": 0,
+        "errors": 0,
+        "hosts_detected": sorted(list(set(g.host for g in plan.groups))),
+    }
+
+    for result in execute_ingest_plan(plan):
+        stats["files_processed"] += result.files_processed
+        stats["documents_indexed"] += result.docs_indexed
+        stats["errors"] += result.errors
+
+    return stats
 
 
 def _human_bytes(n: int) -> str:

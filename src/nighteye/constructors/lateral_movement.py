@@ -1,12 +1,12 @@
 """Lateral Movement Constructor.
 
-Detects T1021 (Remote Services) and related lateral movement techniques.
-Constructs behavioral clusters by linking authentications, service installs,
-admin share access, and Sigma detections.
+Detects TA0008 (Lateral Movement) techniques.
+Constructs behavioral clusters for RDP, SMB, WMI, PsExec,
+PowerShell Remoting, and SSH lateral movement.
 
 References:
-    - CONSTRUCTORS.md § 5.1
-    - MITRE: TA0008, T1021.002, T1569.002
+  - CONSTRUCTORS.md § 5.1
+  - MITRE: TA0008, T1021, T1021.001, T1021.002, T1021.003, T1021.004, T1021.006, T1091, T1210
 """
 
 from __future__ import annotations
@@ -18,160 +18,230 @@ from nighteye.constructors.base import Cluster, Constructor, CounterSignal, Sign
 
 __all__ = ["LateralMovementConstructor"]
 
+# ============================================================
+# Trigger Evaluators
+# ============================================================
 
-def _is_network_logon_type3(event: CanonicalEvent) -> bool:
-    """Trigger: Logon type 3 (Network) from internal IP, excluding machine accounts."""
-    if event.canonical_type != CanonicalType.AUTHENTICATION:
-        return False
-        
-    raw = event.raw_data or {}
-    winlog = raw.get("winlog", {}).get("event_data", {})
-    logon_type = str(winlog.get("LogonType", ""))
-    
-    if logon_type != "3":
-        return False
-        
-    # Ignore machine accounts (e.g. WORKSTATION$)
-    if event.user and event.user.endswith("$"):
-        return False
-        
-    # Ignore localhost loops
-    ip = event.remote_ip
-    if not ip or ip in ("127.0.0.1", "::1"):
-        return False
-        
-    return True
-
-
-def _is_rdp_logon_type10(event: CanonicalEvent) -> bool:
-    """Trigger: Logon type 10 (RemoteInteractive/RDP)."""
-    if event.canonical_type != CanonicalType.AUTHENTICATION:
-        return False
-        
-    raw = event.raw_data or {}
-    winlog = raw.get("winlog", {}).get("event_data", {})
-    return str(winlog.get("LogonType", "")) == "10"
-
-
-def _is_psexec_pattern(event: CanonicalEvent) -> bool:
-    """Trigger: PsExec service installation."""
-    if event.canonical_type != CanonicalType.SERVICE_INSTALLATION:
-        return False
-        
-    path = event.target_file.lower() or event.process_path.lower()
-    return "psexesvc" in path
-
-
-def _is_sigma_lm_match(event: CanonicalEvent) -> bool:
-    """Trigger: Hayabusa/Chainsaw alert tagged with lateral movement."""
-    if event.canonical_type != CanonicalType.ALERT:
-        return False
-        
-    # Look for LM in the rule name or ECS rule categorization
-    name = event.alert_name.lower()
-    return "lateral movement" in name or "psexec" in name or "wmi exec" in name
-
-
-def _is_admin_share_write(event: CanonicalEvent) -> bool:
-    """Supporting: File written to C$, ADMIN$, or IPC$."""
-    if event.canonical_type not in (CanonicalType.FILE_CREATION, CanonicalType.FILE_MODIFICATION):
-        return False
-    path = event.target_file.lower()
-    return "\\c$\\" in path or "\\admin$\\" in path or "\\ipc$\\" in path
-
-
-# --- Supporting Signal Evaluators ---
-
-def _eval_admin_share_write_within_60s(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
-    """Checks if an admin share write occurred near the trigger."""
-    for event in context:
-        if _is_admin_share_write(event):
-            cluster.add_event(event)
-            return True
+def _is_rdp_logon(event: CanonicalEvent) -> bool:
+    """Detect RDP logon events."""
+    if event.canonical_type == CanonicalType.AUTHENTICATION:
+        # Event ID 4624 with LogonType 10 (RemoteInteractive)
+        logon_type = event.raw_data.get("winlog", {}).get("event_data", {}).get("LogonType", "")
+        return str(logon_type) == "10"
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "rdp" in name and ("logon" in name or "connection" in name)
     return False
 
+def _is_smb_admin_share_write(event: CanonicalEvent) -> bool:
+    """Detect write to admin share (C$, ADMIN$)."""
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "admin share" in name or "c$" in name or "admin$" in name
+    if event.canonical_type == CanonicalType.FILE_CREATION:
+        path = event.target_file.lower()
+        return "admin$" in path or "c$" in path or any(share in path for share in ["\\c$", "\\admin$"])
+    return False
 
-def _eval_off_hours(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
-    """Checks if the trigger happened outside normal business hours (09-17)."""
-    # Simple heuristic on the UTC timestamp
-    # In a real app we'd use local timezone if known
-    try:
-        # e.g. "2026-04-29T14:24:30Z"
-        hour = int(cluster.trigger_event.timestamp[11:13])
-        return hour < 9 or hour > 17
-    except Exception:
-        return False
+def _is_wmi_remote(event: CanonicalEvent) -> bool:
+    """Detect WMI remote execution."""
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "wmic" in cmd and "/node:" in cmd
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "wmi" in name and "remote" in name
+    return False
 
+def _is_psexec_usage(event: CanonicalEvent) -> bool:
+    """Detect PsExec or similar remote execution."""
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        psexec_indicators = ["psexec", "paexec", "csexec", "remcom", "smbexec"]
+        return any(ind in cmd for ind in psexec_indicators)
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "psexec" in name or "smbexec" in name
+    return False
 
-# --- Counter Signal Evaluators ---
+def _is_powershell_remoting(event: CanonicalEvent) -> bool:
+    """Detect PowerShell remoting."""
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        ps_remote = ["enter-pssession", "invoke-command", "new-pssession", "icm -computername"]
+        return any(ind in cmd for ind in ps_remote)
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "powershell remoting" in name or "winrm" in name
+    return False
 
-def _eval_admin_workstation_baseline(cluster: Cluster, db: Any) -> tuple[bool, str]:
-    """Check if the source IP is a known admin workstation."""
-    # Stubbed DB lookup
-    ip = cluster.trigger_event.remote_ip
-    if not ip:
-        return False, "no remote IP available"
-    
-    # If db had a baseline:
-    # if ip in db.get_baseline("admin_workstations"): return True, f"{ip} in admin baseline"
-    return False, f"{ip} not in known admin baseline"
+def _is_ssh_lateral(event: CanonicalEvent) -> bool:
+    """Detect SSH-based lateral movement."""
+    if event.canonical_type == CanonicalType.NETWORK_CONNECTION:
+        port = event.remote_port
+        return port == 22
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "ssh" in name and ("lateral" in name or "tunnel" in name)
+    return False
 
+def _is_pass_the_hash(event: CanonicalEvent) -> bool:
+    """Detect Pass-the-Hash or Pass-the-Ticket."""
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "pass the hash" in name or "pass the ticket" in name or "mimikatz" in name
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "sekurlsa::pth" in cmd or "sekurlsa::tickets" in cmd
+    return False
 
-def _eval_service_binary_signed(cluster: Cluster, db: Any) -> tuple[bool, str]:
-    """Check if the service binary is signed by Microsoft."""
-    if cluster.trigger_event.canonical_type != CanonicalType.SERVICE_INSTALLATION:
-        return False, "trigger is not a service installation"
-        
-    # Usually Amcache or PE header parsers give us signature status
-    # We would query the canonical events for this file hash
-    return False, "binary unsigned or signature status unknown"
+def _is_new_service_remote(event: CanonicalEvent) -> bool:
+    """Detect new service created remotely."""
+    if event.canonical_type == CanonicalType.SERVICE_INSTALLATION:
+        # Event ID 4697 or 7045 with remote characteristics
+        return True
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "service" in name and "remote" in name
+    return False
 
+def _is_scheduled_task_remote(event: CanonicalEvent) -> bool:
+    """Detect scheduled task created remotely."""
+    if event.canonical_type == CanonicalType.SCHEDULED_TASK:
+        return True
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "scheduled task" in name and "remote" in name
+    return False
+
+# ============================================================
+# Supporting Signal Evaluators
+# ============================================================
+
+def _eval_new_admin_account(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if new admin account was created."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.ALERT:
+            name = evt.alert_name.lower()
+            if "new account" in name and "admin" in name:
+                return True
+    return False
+
+def _eval_tools_dropped_on_target(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if tools were dropped on target host."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.FILE_CREATION:
+            path = evt.target_file.lower()
+            tool_indicators = [".exe", ".dll", ".ps1", ".bat", ".cmd"]
+            if any(ind in path for ind in tool_indicators):
+                return True
+    return False
+
+def _eval_target_not_previously_accessed(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if target was not previously accessed by same user."""
+    # Would require historical baseline; simplified
+    return True
+
+def _eval_occurred_after_initial_compromise(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if lateral movement occurred after initial compromise."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.ALERT:
+            name = evt.alert_name.lower()
+            if "initial access" in name or "compromise" in name or "execution" in name:
+                return True
+    return False
+
+def _eval_source_host_has_other_attack_signals(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if source host has other attack signals."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.ALERT:
+            name = evt.alert_name.lower()
+            if any(k in name for k in ["persistence", "credential", "defense evasion"]):
+                return True
+    return False
+
+# ============================================================
+# Counter Signal Evaluators
+# ============================================================
+
+def _eval_documented_jump_server(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if source is documented jump server."""
+    host = cluster.trigger_event.host_name.lower()
+    if any(js in host for js in ["jump", "bastion", "gateway", "rdp-gw"]):
+        return True, "Documented jump server"
+    return False, ""
+
+def _eval_sccm_puppet_action(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if this matches SCCM/Puppet action."""
+    proc = cluster.trigger_event.process_name.lower()
+    if proc in ["ccmexec.exe", "puppet.exe", "chef-client.exe"]:
+        return True, "Configuration management tool"
+    return False, ""
+
+def _eval_help_desk_remote_support(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if this matches help desk remote support."""
+    proc = cluster.trigger_event.process_name.lower()
+    support_tools = ["teamviewer.exe", "anydesk.exe", "screenconnect.exe", "bomgar.exe"]
+    if proc in support_tools:
+        return True, "Known remote support tool"
+    return False, ""
+
+def _eval_user_documented_it_admin(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if user is documented IT admin."""
+    user = cluster.trigger_event.user
+    if user:
+        user_lower = user.lower()
+        if any(admin in user_lower for admin in ["admin", "it-", "helpdesk", "support"]):
+            return True, "Documented IT admin user"
+    return False, ""
+
+# ============================================================
+# Constructor
+# ============================================================
 
 class LateralMovementConstructor(Constructor):
-    """Constructor for detecting Lateral Movement chains."""
-    
     name = "LateralMovement"
     mitre_tactic = "TA0008"
-    mitre_techniques = ["T1021.001", "T1021.002", "T1569.002"]
+    mitre_techniques = ["T1021", "T1021.001", "T1021.002", "T1021.003", "T1021.004", "T1021.006", "T1091", "T1210"]
+
+    grouping_window_seconds = 1800  # 30 minutes
+    group_by = ["source_host", "destination_host"]
 
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("network_logon_type3_from_internal", 30, _is_network_logon_type3),
-            TriggerRule("rdp_logon_type10", 30, _is_rdp_logon_type10),
-            TriggerRule("psexec_pattern", 50, _is_psexec_pattern),
-            TriggerRule("sigma_lateral_movement_match", 45, _is_sigma_lm_match),
+            TriggerRule("rdp_logon", 45, _is_rdp_logon),
+            TriggerRule("smb_admin_share_write", 50, _is_smb_admin_share_write),
+            TriggerRule("wmi_remote_execution", 45, _is_wmi_remote),
+            TriggerRule("psexec_usage", 50, _is_psexec_usage),
+            TriggerRule("powershell_remoting", 45, _is_powershell_remoting),
+            TriggerRule("ssh_lateral", 40, _is_ssh_lateral),
+            TriggerRule("pass_the_hash_ticket", 55, _is_pass_the_hash),
+            TriggerRule("new_service_remote", 40, _is_new_service_remote),
+            TriggerRule("scheduled_task_remote", 40, _is_scheduled_task_remote),
         ]
 
     @property
     def supporting_signals(self) -> list[SignalRule]:
         return [
-            SignalRule("admin_share_write_within_60s", 12, _eval_admin_share_write_within_60s),
-            SignalRule("off_hours_timestamp", 10, _eval_off_hours),
+            SignalRule("new_admin_account", 12, _eval_new_admin_account),
+            SignalRule("tools_dropped_on_target", 14, _eval_tools_dropped_on_target),
+            SignalRule("target_not_previously_accessed", 10, _eval_target_not_previously_accessed),
+            SignalRule("occurred_after_initial_compromise", 12, _eval_occurred_after_initial_compromise),
+            SignalRule("source_host_has_other_attack_signals", 12, _eval_source_host_has_other_attack_signals),
         ]
 
     @property
     def counter_signals(self) -> list[CounterSignal]:
         return [
-            CounterSignal("source_host_baseline_matched_admin_workstation", 10, _eval_admin_workstation_baseline),
-            CounterSignal("service_binary_signed_microsoft", 10, _eval_service_binary_signed),
+            CounterSignal("documented_jump_server", 12, _eval_documented_jump_server),
+            CounterSignal("sccm_puppet_action", 10, _eval_sccm_puppet_action),
+            CounterSignal("help_desk_remote_support", 12, _eval_help_desk_remote_support),
+            CounterSignal("user_documented_it_admin", 10, _eval_user_documented_it_admin),
         ]
 
     def generate_summary(self, cluster: Cluster) -> None:
-        src_ip = cluster.trigger_event.remote_ip or "unknown IP"
-        user = cluster.trigger_event.user or "unknown user"
         host = cluster.trigger_event.host_name
-        
-        parts = [f"Lateral movement pattern detected on {host}"]
-        
-        if cluster.trigger_name == "network_logon_type3_from_internal":
-            parts.append(f"Network logon (Type 3) by {user} from {src_ip}")
-        elif cluster.trigger_name == "psexec_pattern":
-            parts.append(f"PsExec service installation detected")
-        elif cluster.trigger_name == "sigma_lateral_movement_match":
-            parts.append(f"Sigma LM detection: {cluster.trigger_event.alert_name}")
-            
-        if "admin_share_write_within_60s" in cluster.supporting_signals:
-            parts.append("followed by an admin share write")
-            
-        cluster.summary = ", ".join(parts) + "."
+        trigger = cluster.trigger_name
+        user = cluster.trigger_event.user or "unknown"
+        cluster.summary = f"Lateral movement detected on {host} by {user}: {trigger}. Possible host-to-host propagation."

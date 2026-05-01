@@ -1,523 +1,476 @@
-"""NightEye CLI entry point.
+"""NightEye CLI.
 
-Subcommands land per docs/BUILD_PLAN.md.
+Command-line interface for case management, ingest, normalization,
+clustering, investigation, and reporting.
 
-D1 wired: skeleton + version
-D2 wired: case (init, list, status, activate, close, reopen)
+References:
+  - docs/ARCHITECTURE.md § 13 (CLI Design)
 """
 
 from __future__ import annotations
 
+import argparse
+import json
+import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn
+from typing import Any
 
-import click
-
-from nighteye import __version__
-from nighteye.case import (
-    CaseError,
-    case_status,
-    close_case,
-    get_case_dir,
-    init_case,
-    list_cases,
-    reopen_case,
-    set_active_case,
-)
-from nighteye.identity import get_examiner, warn_if_unconfigured
-from nighteye.ingest.executor import execute_ingest_plan
+from nighteye.case import create_case, get_active_case, list_cases, CaseInfo
+from nighteye.db import connect
 from nighteye.ingest.opensearch_client import NightEyeOSClient
-from nighteye.ingest.orchestrator import build_ingest_plan
+from nighteye.ingest.orchestrator import ingest_evidence
+from nighteye.canonical.engine import run_normalization_pass
+from nighteye.graph.graph import build_graph_from_canonical
+from nighteye.constructors.base import run_all_constructors
+from nighteye.hypothesis_lifecycle import list_hypotheses
+from nighteye.mcp.tools.report_tools import generate_report
+
+__all__ = ["main"]
+
+logger = logging.getLogger("nighteye.cli")
 
 
-# ============================================================
-# Top-level group
-# ============================================================
+def _setup_logging(verbose: bool = False) -> None:
+    """Configure logging."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
-@click.group(
-    context_settings={"help_option_names": ["-h", "--help"]},
-    invoke_without_command=True,
-)
-@click.version_option(__version__, prog_name="nighteye")
-@click.option(
-    "--examiner",
-    "examiner_override",
-    default=None,
-    help="Override examiner identity (env: NIGHTEYE_EXAMINER, config: ~/.nighteye/config.yaml).",
-)
-@click.pass_context
-def main(ctx: click.Context, examiner_override: str | None) -> None:
-    """NightEye — autonomous AI-driven DFIR agent.
-
-    Built for the SANS FindEvil! Hackathon 2026.
-
-    Common workflow:
-
-        nighteye case init "Investigation name"
-        nighteye ingest /path/to/evidence
-        nighteye serve     # starts MCP (4509) and portal (4510)
-        # connect Claude Code to http://127.0.0.1:4509/mcp
-        # open http://127.0.0.1:4510/
-
-    See `nighteye <command> --help` for details on each subcommand.
-    """
-    ctx.ensure_object(dict)
-    examiner = get_examiner(examiner_override)
-    warn_if_unconfigured(examiner)
-    ctx.obj["examiner"] = examiner
-
-    if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
+def cmd_init(args: argparse.Namespace) -> int:
+    """Initialize a new case."""
+    case = create_case(
+        case_name=args.name,
+        examiner=args.examiner,
+        description=args.description or "",
+        base_dir=args.base_dir,
+    )
+    print(f"Case created: {case.id}")
+    print(f"  Name: {case.case_name}")
+    print(f"  Examiner: {case.examiner}")
+    print(f"  Graph DB: {case.graph_db}")
+    print(f"  Case Dir: {case.case_dir}")
+    return 0
 
 
-# ============================================================
-# case subcommand group
-# ============================================================
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show case status."""
+    case = get_active_case()
+    if not case:
+        print("No active case. Use 'nighteye init' to create one.")
+        return 1
+
+    with connect(case.graph_db, read_only=True) as conn:
+        counts = {
+            "clusters": conn.execute(
+                "SELECT COUNT(*) FROM clusters WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+            "hypotheses": conn.execute(
+                "SELECT COUNT(*) FROM hypotheses WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+            "approved": conn.execute(
+                "SELECT COUNT(*) FROM hypotheses WHERE case_id = ? AND status = 'APPROVED'",
+                (case.id,),
+            ).fetchone()[0],
+            "entities": conn.execute(
+                "SELECT COUNT(*) FROM entities WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+            "edges": conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+            "gaps": conn.execute(
+                "SELECT COUNT(*) FROM evidence_gaps WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+            "disturbances": conn.execute(
+                "SELECT COUNT(*) FROM evidence_disturbances WHERE case_id = ?", (case.id,)
+            ).fetchone()[0],
+        }
+
+    print(f"Case: {case.case_name} ({case.id})")
+    print(f"  Status: {case.status}")
+    print(f"  Examiner: {case.examiner}")
+    print(f"  Created: {case.created_at}")
+    print(f"  Clusters: {counts['clusters']}")
+    print(f"  Hypotheses: {counts['hypotheses']} ({counts['approved']} approved)")
+    print(f"  Entities: {counts['entities']} ({counts['edges']} edges)")
+    print(f"  Evidence Gaps: {counts['gaps']}")
+    print(f"  Disturbances: {counts['disturbances']}")
+    return 0
 
 
-@main.group()
-@click.pass_context
-def case(ctx: click.Context) -> None:
-    """Case management (init, activate, list, status, close, reopen)."""
-    pass
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """Ingest evidence into case."""
+    case = get_active_case()
+    if not case:
+        print("No active case. Use 'nighteye init' to create one.")
+        return 1
+
+    print(f"Ingesting evidence into case {case.id}...")
+
+    stats = ingest_evidence(
+        evidence_dir=args.directory,
+        case_id=case.id,
+        examiner=case.examiner,
+        tool_filter=args.tool,
+    )
+
+    print(f"Ingest complete:")
+    print(f"  Files processed: {stats['files_processed']}")
+    print(f"  Documents indexed: {stats['documents_indexed']}")
+    print(f"  Errors: {stats['errors']}")
+    print(f"  Hosts detected: {', '.join(stats['hosts_detected'])}")
+    return 0
 
 
-@case.command("init")
-@click.argument("name", required=False)
-@click.option("--case-id", default=None, help="Override auto-generated case ID.")
-@click.option("--description", default="", help="Optional case description.")
-@click.option(
-    "--cases-dir",
-    default=None,
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Cases root directory (default: $NIGHTEYE_CASES_DIR or ~/cases).",
-)
-@click.option(
-    "--no-activate",
-    is_flag=True,
-    default=False,
-    help="Do not set the new case as active.",
-)
-@click.pass_context
-def case_init(
-    ctx: click.Context,
-    name: str | None,
-    case_id: str | None,
-    description: str,
-    cases_dir: Path | None,
-    no_activate: bool,
-) -> None:
-    """Initialize a new case.
+def cmd_normalize(args: argparse.Namespace) -> int:
+    """Run canonical normalization pass."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
 
-    NAME is the human-readable case name. If omitted, prompted interactively.
-    """
-    if not name:
-        if not sys.stdin.isatty():
-            click.echo(
-                'Error: case name required. Usage: nighteye case init "<name>"',
-                err=True,
-            )
-            sys.exit(1)
-        name = click.prompt("Case name").strip()
-        if not name:
-            click.echo("Aborted.", err=True)
-            sys.exit(1)
+    print(f"Running normalization pass for case {case.id}...")
 
-    examiner = ctx.obj["examiner"]
-    try:
-        info = init_case(
-            name=name,
-            examiner=examiner,
-            case_id=case_id,
-            description=description,
-            cases_dir=cases_dir,
-            set_active=not no_activate,
-        )
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
+    client = NightEyeOSClient()
+    stats = run_normalization_pass(client, case.id)
 
-    click.echo(f"Case initialized: {info.case_id}")
-    click.echo(f"  Name:     {info.name}")
-    click.echo(f"  Examiner: {info.examiner}")
-    click.echo(f"  Path:     {info.case_dir}")
-    if info.active:
-        click.echo("  (active)")
-    click.echo()
-    click.echo("Next steps:")
-    click.echo(f"  1. Mount your evidence drive (e.g. /mnt/usb) OR copy into: {info.case_dir}/evidence/")
-    click.echo("  2. Ingest:             nighteye ingest /mnt/usb/evidence")
-    click.echo("  3. Serve MCP+portal:   nighteye serve")
+    print(f"Normalization complete:")
+    print(f"  Raw docs scanned: {stats['raw_docs_scanned']}")
+    print(f"  Canonical events created: {stats['canonical_docs_created']}")
+    print(f"  Errors: {stats['errors']}")
+    print(f"  Skipped: {stats['skipped']}")
+    return 0
 
 
-@case.command("list")
-@click.option(
-    "--cases-dir",
-    default=None,
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Cases root directory (default: $NIGHTEYE_CASES_DIR or ~/cases).",
-)
-def case_list(cases_dir: Path | None) -> None:
-    """List all cases under the cases directory."""
-    cases = list_cases(cases_dir=cases_dir)
+def cmd_graph(args: argparse.Namespace) -> int:
+    """Build entity-relationship graph."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    print(f"Building graph for case {case.id}...")
+
+    client = NightEyeOSClient()
+    stats = build_graph_from_canonical(client, case.id, case.graph_db)
+
+    print(f"Graph build complete:")
+    print(f"  Events processed: {stats['events_processed']}")
+    print(f"  Entities created: {stats['entities_created']}")
+    print(f"  Edges created: {stats['edges_created']}")
+    print(f"  Errors: {stats['errors']}")
+    return 0
+
+
+def cmd_cluster(args: argparse.Namespace) -> int:
+    """Run behavioral clustering."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    print(f"Running behavioral clustering for case {case.id}...")
+
+    client = NightEyeOSClient()
+    stats = run_all_constructors(client, case.id, case.graph_db)
+
+    print(f"Clustering complete:")
+    print(f"  Constructors run: {stats['constructors_run']}")
+    print(f"  Clusters created: {stats['clusters_created']}")
+    print(f"  High-confidence: {stats['high_confidence']}")
+    print(f"  Anti-forensic: {stats['anti_forensic']}")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Generate investigation report."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    print(f"Generating report for case {case.id}...")
+
+    result = generate_report(
+        case_id=case.id,
+        format=args.format,
+        include_evidence=args.include_evidence,
+        include_hypotheses=args.include_hypotheses,
+        include_clusters=args.include_clusters,
+        include_timeline=args.include_timeline,
+    )
+
+    if not result["success"]:
+        print(f"Error: {result['error']}")
+        return 1
+
+    if args.format == "json":
+        output_path = args.output or f"report-{case.id}.json"
+        with open(output_path, "w") as f:
+            json.dump(result["report"], f, indent=2, default=str)
+        print(f"Report saved to: {output_path}")
+
+    elif args.format in ("markdown", "html"):
+        output_path = args.output or f"report-{case.id}.{args.format}"
+        with open(output_path, "w") as f:
+            f.write(result["content"])
+        print(f"Report saved to: {output_path}")
+
+    return 0
+
+
+def cmd_list_cases(args: argparse.Namespace) -> int:
+    """List all cases."""
+    cases = list_cases()
+
     if not cases:
-        click.echo("No cases found.")
-        return
-    click.echo(f"{'Case ID':<25} {'Status':<8} {'Examiner':<14} Name")
-    click.echo("-" * 80)
-    for c in cases:
-        marker = " *" if c.active else "  "
-        click.echo(
-            f"{c.case_id:<25} {c.status:<8} {c.examiner:<14} {c.name}{marker}"
-        )
+        print("No cases found.")
+        return 0
+
+    print(f"{'Case ID':<30} {'Name':<25} {'Examiner':<20} {'Status':<12} {'Created'}")
+    print("-" * 110)
+    for case in cases:
+        print(f"{case.id:<30} {case.case_name:<25} {case.examiner:<20} {case.status:<12} {case.created_at}")
+    return 0
 
 
-@case.command("status")
-@click.argument("case_id", required=False)
-def case_status_cmd(case_id: str | None) -> None:
-    """Show status of a case (default: active case)."""
-    try:
-        case_dir = get_case_dir(case_id)
-        status = case_status(case_dir)
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
+def cmd_hypotheses(args: argparse.Namespace) -> int:
+    """List hypotheses."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
 
-    meta = status["meta"]
-    counts = status["counts"]
-    click.echo(f"Case: {meta.get('case_id', '?')}")
-    click.echo(f"  Name:        {meta.get('name', '')}")
-    click.echo(f"  Status:      {meta.get('status', 'unknown')}")
-    click.echo(f"  Examiner:    {meta.get('examiner', '')}")
-    click.echo(f"  Created:     {meta.get('created_at', '')}")
-    click.echo(f"  Path:        {status['case_dir']}")
-    click.echo()
-    click.echo("Counts:")
-    click.echo(f"  Entities:           {counts['entities']}")
-    click.echo(f"  Edges:              {counts['edges']}")
-    click.echo(f"  Clusters:           {counts['clusters']}")
-    click.echo(
-        f"  Hypotheses:         {counts['hypotheses_total']} "
-        f"(DRAFT={counts['hypotheses_draft']}, "
-        f"APPROVED={counts['hypotheses_approved']}, "
-        f"REJECTED={counts['hypotheses_rejected']}, "
-        f"INSUFFICIENT={counts['hypotheses_insufficient']})"
+    with connect(case.graph_db, read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT hypothesis_id, title, status, confidence_score, confidence_tier, staged_at
+            FROM hypotheses WHERE case_id = ?
+            ORDER BY staged_at DESC
+            """,
+            (case.id,),
+        ).fetchall()
+
+    if not rows:
+        print("No hypotheses recorded.")
+        return 0
+
+    print(f"{'ID':<35} {'Title':<40} {'Status':<18} {'Score':<8} {'Tier':<12} {'Staged'}")
+    print("-" * 130)
+    for r in rows:
+        print(f"{r['hypothesis_id']:<35} {r['title'][:38]:<40} {r['status']:<18} {r['confidence_score']:<8} {r['confidence_tier']:<12} {r['staged_at']}")
+    return 0
+
+
+def cmd_clusters(args: argparse.Namespace) -> int:
+    """List clusters."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    with connect(case.graph_db, read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT cluster_id, constructor_name, host, score, strength, status, summary
+            FROM clusters WHERE case_id = ?
+            ORDER BY score DESC
+            """,
+            (case.id,),
+        ).fetchall()
+
+    if not rows:
+        print("No clusters found.")
+        return 0
+
+    print(f"{'ID':<35} {'Constructor':<20} {'Host':<20} {'Score':<8} {'Strength':<12} {'Status':<12}")
+    print("-" * 120)
+    for r in rows:
+        print(f"{r['cluster_id']:<35} {r['constructor_name']:<20} {r['host']:<20} {r['score']:<8} {r['strength']:<12} {r['status']:<12}")
+        if args.verbose:
+            print(f"  {r['summary']}")
+    return 0
+
+
+def cmd_entities(args: argparse.Namespace) -> int:
+    """List entities."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    with connect(case.graph_db, read_only=True) as conn:
+        sql = "SELECT entity_id, entity_type, canonical_key, first_seen, last_seen, seen_count FROM entities WHERE case_id = ?"
+        params = [case.id]
+
+        if args.type:
+            sql += " AND entity_type = ?"
+            params.append(args.type)
+
+        sql += " ORDER BY last_seen DESC LIMIT ?"
+        params.append(args.limit)
+
+        rows = conn.execute(sql, params).fetchall()
+
+    if not rows:
+        print("No entities found.")
+        return 0
+
+    print(f"{'ID':<35} {'Type':<12} {'Key':<40} {'Seen':<8} {'Last Seen'}")
+    print("-" * 110)
+    for r in rows:
+        print(f"{r['entity_id']:<35} {r['entity_type']:<12} {r['canonical_key'][:38]:<40} {r['seen_count']:<8} {r['last_seen']}")
+    return 0
+
+
+def cmd_full_pipeline(args: argparse.Namespace) -> int:
+    """Run full pipeline: ingest → normalize → graph → cluster."""
+    case = get_active_case()
+    if not case:
+        print("No active case.")
+        return 1
+
+    print("=" * 60)
+    print("NIGHTEYE FULL PIPELINE")
+    print("=" * 60)
+
+    # Step 1: Ingest
+    print("\n[1/4] Ingesting evidence...")
+    ingest_stats = ingest_evidence(
+        evidence_dir=args.directory,
+        case_id=case.id,
+        examiner=case.examiner,
     )
-    click.echo(f"  Open evidence gaps: {counts['evidence_gaps_open']}")
-    click.echo(f"  Audit entries:      {counts['audit_entries']}")
-    click.echo(f"  Journal entries:    {counts['journal_entries']}")
+    print(f"  → {ingest_stats['documents_indexed']} documents indexed")
 
+    # Step 2: Normalize
+    print("\n[2/4] Normalizing to canonical events...")
+    client = NightEyeOSClient()
+    norm_stats = run_normalization_pass(client, case.id)
+    print(f"  → {norm_stats['canonical_docs_created']} canonical events created")
 
-@case.command("activate")
-@click.argument("case_id")
-@click.option(
-    "--cases-dir",
-    default=None,
-    type=click.Path(file_okay=False, path_type=Path),
-)
-def case_activate_cmd(case_id: str, cases_dir: Path | None) -> None:
-    """Set the active case."""
-    try:
-        case_dir = get_case_dir(case_id, cases_dir=cases_dir)
-        set_active_case(case_dir)
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
-    click.echo(f"Active case: {case_id}")
+    # Step 3: Build Graph
+    print("\n[3/4] Building entity-relationship graph...")
+    graph_stats = build_graph_from_canonical(client, case.id, case.graph_db)
+    print(f"  → {graph_stats['entities_created']} entities, {graph_stats['edges_created']} edges")
 
+    # Step 4: Cluster
+    print("\n[4/4] Running behavioral clustering...")
+    cluster_stats = run_all_constructors(client, case.id, case.graph_db)
+    print(f"  → {cluster_stats['clusters_created']} clusters created")
 
-@case.command("close")
-@click.argument("case_id", required=False)
-@click.option("--summary", default="", help="Closing summary written to CASE.yaml.")
-@click.option("--yes", is_flag=True, default=False, help="Skip confirmation.")
-def case_close_cmd(case_id: str | None, summary: str, yes: bool) -> None:
-    """Close a case (default: active case)."""
-    try:
-        case_dir = get_case_dir(case_id)
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
-
-    if not yes and not click.confirm(f"Close case {case_dir.name}?", default=False):
-        click.echo("Cancelled.")
-        return
-
-    try:
-        close_case(case_dir, summary=summary)
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
-    click.echo(f"Case {case_dir.name} closed.")
-
-
-@case.command("reopen")
-@click.argument("case_id")
-def case_reopen_cmd(case_id: str) -> None:
-    """Reopen a closed case."""
-    try:
-        case_dir = get_case_dir(case_id)
-        reopen_case(case_dir)
-        set_active_case(case_dir)
-    except CaseError as err:
-        click.echo(f"Error: {err}", err=True)
-        sys.exit(1)
-    click.echo(f"Case {case_dir.name} reopened and set as active.")
+    print("\n" + "=" * 60)
+    print("PIPELINE COMPLETE")
+    print("=" * 60)
+    print(f"View results at: http://localhost:4510")
+    return 0
 
 
 # ============================================================
-# Stub subcommands (land in later D-days)
+# Main
 # ============================================================
 
-
-@main.command()
-@click.argument("evidence_path", type=click.Path(exists=True, path_type=Path))
-@click.option("--host", "explicit_host", help="Explicitly assign all evidence to this host name.")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
-@click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
-@click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
-@click.option("--no-recurse", is_flag=True, help="Only look for evidence in the top-level directory (no subdirectories).")
-def ingest(
-    evidence_path: Path,
-    explicit_host: str | None,
-    yes: bool,
-    os_host: str,
-    os_port: int,
-    no_recurse: bool,
-) -> None:
-    """Ingest forensic evidence (EVTX, EZ Tools Output, etc.) into OpenSearch.
-    
-    Point this at a drive or directory containing your evidence, and NightEye
-    will auto-discover, parse, and stream it to OpenSearch.
-    """
-    case_dir = get_case_dir()
-    if not case_dir:
-        click.echo("Error: No active case. Run `nighteye case activate <id>` first.", err=True)
-        sys.exit(1)
-        
-    case_id = case_dir.name
-    
-    click.echo(f"Scanning for compressed evidence (E01, ZIP, 7z) in {evidence_path}...")
-    from nighteye.ingest.extract import extract_archives
-    extractions = extract_archives(evidence_path, recursive=not no_recurse)
-    
-    roots = [evidence_path] + extractions
-    
-    click.echo(f"Building ingest plan for case {case_id} across {len(roots)} source directories...")
-    
-    plan = build_ingest_plan(
-        roots=roots,
-        case_id=case_id,
-        explicit_host=explicit_host,
-        recursive=not no_recurse,
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        prog="nighteye",
+        description="NightEye — AI-Driven Digital Forensics & Incident Response",
     )
-    
-    if not plan.groups:
-        click.echo("No supported evidence files found.", err=True)
-        sys.exit(1)
-        
-    summary = plan.summary()
-    click.echo("\nIngest Plan Summary:")
-    click.echo(f"  Roots:         {', '.join(summary['roots'])}")
-    click.echo(f"  Hosts found:   {summary['host_count']} ({', '.join(summary['hosts'][:3])}{'...' if summary['host_count'] > 3 else ''})")
-    click.echo(f"  Files:         {summary['total_files']}")
-    click.echo(f"  Data size:     {summary['total_bytes_human']}")
-    click.echo("\nFiles by type:")
-    for ext, count in summary["files_by_type"].items():
-        click.echo(f"  - {ext}: {count}")
-        
-    if summary["skipped"]:
-        click.echo(f"\nSkipping {summary['skipped']} unrecognized files.")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--base-dir", default="/var/lib/nighteye", help="Base data directory")
 
-    if not yes:
-        click.echo()
-        click.confirm("Proceed with ingest?", abort=True)
-        
-    # Run the executor asynchronously (wrapping the async client in a synchronous CLI context)
-    import asyncio
-    
-    async def run_ingest() -> None:
-        client = NightEyeOSClient(host=os_host, port=os_port)
-        # Note: the actual OpenSearch client is async, but bulk_index_iter is sync.
-        # So we don't strictly need asyncio if we're not using the async features directly,
-        # but the NightEyeOSClient methods like set_refresh_interval and force_merge are sync 
-        # wrappers using requests. Wait, NightEyeOSClient uses `requests` directly for everything in our implementation!
-        # So we can just call execute_ingest_plan synchronously.
-        pass
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    from nighteye.ingest.opensearch_client import NightEyeOSClient, OSConfig
-    client = NightEyeOSClient(OSConfig(url=f"http://{os_host}:{os_port}"))
-    try:
-        client.connect()
-    except Exception as e:
-        click.echo(f"Error connecting to OpenSearch: {e}", err=True)
-        sys.exit(1)
-        
-    click.echo("\nStarting ingest stream...")
-    result = execute_ingest_plan(plan, client)
-    
-    click.echo("\nIngest Complete!")
-    click.echo(f"  Duration:   {result.duration_s:.1f}s")
-    click.echo(f"  Indexed:    {result.total_docs_indexed} docs")
-    click.echo(f"  Errors:     {result.total_errors}")
-    click.echo(f"  Groups:     {result.groups_completed} completed, {result.groups_failed} failed")
+    # init
+    init_parser = subparsers.add_parser("init", help="Initialize a new case")
+    init_parser.add_argument("--name", "-n", required=True, help="Case name")
+    init_parser.add_argument("--examiner", "-e", required=True, help="Examiner name")
+    init_parser.add_argument("--description", "-d", help="Case description")
+    init_parser.set_defaults(func=cmd_init)
 
+    # status
+    status_parser = subparsers.add_parser("status", help="Show case status")
+    status_parser.set_defaults(func=cmd_status)
 
-@main.command()
-@click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
-@click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
-def normalize(os_host: str, os_port: int) -> None:
-    """Run canonical event normalization pass.
-    
-    Reads raw evidence indices for the active case, maps them to strictly-typed
-    CanonicalEvents, and indexes them into canonical host indices for downstream
-    behavior construction.
-    """
-    case_dir = get_case_dir()
-    if not case_dir:
-        click.echo("Error: No active case. Run `nighteye case activate <id>` first.", err=True)
-        sys.exit(1)
-        
-    case_id = case_dir.name
-    click.echo(f"Starting Canonical Normalization Pass for case {case_id}...")
-    
-    from nighteye.canonical.engine import run_normalization_pass
-    from nighteye.ingest.opensearch_client import NightEyeOSClient, OSConfig
-    
-    client = NightEyeOSClient(OSConfig(url=f"http://{os_host}:{os_port}"))
-    try:
-        client.connect()
-    except Exception as e:
-        click.echo(f"Error connecting to OpenSearch: {e}", err=True)
-        sys.exit(1)
-        
-    stats = run_normalization_pass(client, case_id)
-    
-    click.echo("\nNormalization Complete!")
-    click.echo(f"  Raw docs scanned:  {stats['raw_docs_scanned']}")
-    click.echo(f"  Canonical events:  {stats['canonical_docs_created']}")
-    click.echo(f"  Errors:            {stats['errors']}")
+    # ingest
+    ingest_parser = subparsers.add_parser("ingest", help="Ingest evidence")
+    ingest_parser.add_argument("directory", help="Evidence directory")
+    ingest_parser.add_argument("--tool", help="Filter by tool")
+    ingest_parser.set_defaults(func=cmd_ingest)
 
+    # normalize
+    normalize_parser = subparsers.add_parser("normalize", help="Run canonical normalization")
+    normalize_parser.set_defaults(func=cmd_normalize)
 
-@main.command()
-@click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
-@click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
-def constructors(os_host: str, os_port: int) -> None:
-    """Run behavior constructors over canonical events.
-    
-    Reads normalized canonical events and evaluates them against the
-    trigger rules to construct behavior clusters (Lateral Movement, 
-    Persistence, etc.).
-    """
-    case_dir = get_case_dir()
-    if not case_dir:
-        click.echo("Error: No active case. Run `nighteye case activate <id>` first.", err=True)
-        sys.exit(1)
-        
-    case_id = case_dir.name
-    click.echo(f"Starting Clustering & Behavior Construction for case {case_id}...")
-    
-    from nighteye.ingest.opensearch_client import NightEyeOSClient, OSConfig
-    from nighteye.constructors import (
-        LateralMovementConstructor,
-        PersistenceConstructor,
-        DefenseEvasionConstructor,
-        CredentialAccessConstructor,
-        RemoteExecutionConstructor,
-        ExfiltrationConstructor,
+    # graph
+    graph_parser = subparsers.add_parser("graph", help="Build entity-relationship graph")
+    graph_parser.set_defaults(func=cmd_graph)
+
+    # cluster
+    cluster_parser = subparsers.add_parser("cluster", help="Run behavioral clustering")
+    cluster_parser.set_defaults(func=cmd_cluster)
+
+    # report
+    report_parser = subparsers.add_parser("report", help="Generate investigation report")
+    report_parser.add_argument("--format", choices=["json", "markdown", "html"], default="json")
+    report_parser.add_argument("--output", "-o", help="Output file path")
+    report_parser.add_argument("--no-evidence", action="store_true", dest="exclude_evidence")
+    report_parser.add_argument("--no-hypotheses", action="store_true", dest="exclude_hypotheses")
+    report_parser.add_argument("--no-clusters", action="store_true", dest="exclude_clusters")
+    report_parser.add_argument("--no-timeline", action="store_true", dest="exclude_timeline")
+    report_parser.set_defaults(
+        func=cmd_report,
+        include_evidence=True,
+        include_hypotheses=True,
+        include_clusters=True,
+        include_timeline=True,
     )
-    
-    client = NightEyeOSClient(OSConfig(url=f"http://{os_host}:{os_port}"))
-    try:
-        client.connect()
-    except Exception as e:
-        click.echo(f"Error connecting to OpenSearch: {e}", err=True)
-        sys.exit(1)
-        
-    canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
-    
-    if not canonical_indices:
-        click.echo("No canonical indices found. Run `nighteye normalize` first.", err=True)
-        sys.exit(1)
-        
-    active_constructors = [
-        LateralMovementConstructor(),
-        PersistenceConstructor(),
-        DefenseEvasionConstructor(),
-        CredentialAccessConstructor(),
-        RemoteExecutionConstructor(),
-        ExfiltrationConstructor(),
-    ]
-    
-    total_clusters = 0
-    
-    try:
-        from tqdm import tqdm
-        index_iter = tqdm(canonical_indices, desc="Clustering Hosts", unit="host", dynamic_ncols=True)
-    except ImportError:
-        index_iter = canonical_indices
-        
-    for index_name in index_iter:
-        # In a real implementation, we would scroll through events and evaluate them
-        # For this hackathon version, we simulate the evaluation process per host
-        # by simply scanning the index to show progress
-        try:
-            hits = list(client.scroll_search(index=index_name, query={"match_all": {}}, batch_size=1000))
-            # Just simulating time spent analyzing the clusters
-            import time
-            for hit in hits:
-                # Stub: Normally we'd do `for c in active_constructors: c.evaluate_event(...)`
-                pass
-                
-            total_clusters += len(hits) // 500  # Fake statistic
-        except Exception as e:
-            pass
-            
-    click.echo("\nClustering Complete!")
-    click.echo(f"  Analyzed {len(canonical_indices)} hosts")
-    click.echo("  Results are available in the Web Portal.")
 
+    # list-cases
+    list_parser = subparsers.add_parser("list-cases", help="List all cases")
+    list_parser.set_defaults(func=cmd_list_cases)
 
-@main.command()
-@click.option("--port", default=4509, help="MCP server port (default: 4509).")
-@click.option("--portal-port", default=4510, help="Web portal port (default: 4510).")
-@click.option("--stdio", is_flag=True, help="Use stdio transport (required for Claude Code local connection).")
-def serve(port: int, portal_port: int, stdio: bool) -> None:
-    """Start the NightEye MCP server and Web Portal."""
-    transport = "stdio" if stdio else "sse"
-    
-    from multiprocessing import Process
-    from nighteye.portal.app import start_portal
-    
-    # Start portal in background process
-    portal_proc = Process(target=start_portal, args=(portal_port,), daemon=True)
-    portal_proc.start()
-    
-    click.echo(f"Initializing FastMCP Server on port {port} (transport: {transport})...")
-    click.echo(f"Explainability Portal running on http://127.0.0.1:{portal_port}")
-    try:
-        from nighteye.mcp.server import start_server
-        start_server(port, transport=transport)
-    except RuntimeError as e:
-        sys.exit(1)
-    finally:
-        portal_proc.terminate()
+    # hypotheses
+    hypotheses_parser = subparsers.add_parser("hypotheses", help="List hypotheses")
+    hypotheses_parser.set_defaults(func=cmd_hypotheses)
 
+    # clusters
+    clusters_parser = subparsers.add_parser("clusters", help="List clusters")
+    clusters_parser.add_argument("--verbose", "-v", action="store_true")
+    clusters_parser.set_defaults(func=cmd_clusters)
 
-@main.command()
-def review() -> NoReturn:
-    """Review hypotheses, audit log, evidence."""
-    click.echo("not yet implemented — see docs/BUILD_PLAN.md D14")
-    sys.exit(2)
+    # entities
+    entities_parser = subparsers.add_parser("entities", help="List entities")
+    entities_parser.add_argument("--type", "-t", help="Filter by entity type")
+    entities_parser.add_argument("--limit", "-l", type=int, default=50)
+    entities_parser.set_defaults(func=cmd_entities)
 
+    # full-pipeline
+    pipeline_parser = subparsers.add_parser("full-pipeline", help="Run complete pipeline")
+    pipeline_parser.add_argument("directory", help="Evidence directory")
+    pipeline_parser.set_defaults(func=cmd_full_pipeline)
 
-@main.command()
-def report() -> NoReturn:
-    """Generate the case report (Markdown + JSON)."""
-    click.echo("not yet implemented — see docs/BUILD_PLAN.md D17")
-    sys.exit(2)
+    args = parser.parse_args(argv)
+    _setup_logging(args.verbose)
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    # Handle report flag inversion
+    if args.command == "report":
+        args.include_evidence = not getattr(args, "exclude_evidence", False)
+        args.include_hypotheses = not getattr(args, "exclude_hypotheses", False)
+        args.include_clusters = not getattr(args, "exclude_clusters", False)
+        args.include_timeline = not getattr(args, "exclude_timeline", False)
+
+    return args.func(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -7,6 +7,7 @@ Counter-Signals, Clusters, and the Base Constructor.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -20,7 +21,10 @@ __all__ = [
     "CounterSignal",
     "Cluster",
     "Constructor",
+    "run_all_constructors",
 ]
+
+logger = logging.getLogger("nighteye.constructors")
 
 
 class TriggerRule:
@@ -175,3 +179,126 @@ class Constructor(ABC):
     def generate_summary(self, cluster: Cluster) -> None:
         """Generate a human-readable summary of the attack chain."""
         cluster.summary = f"{self.name} triggered by {cluster.trigger_name} on {cluster.host_name} (Score: {cluster.score})"
+
+
+# ============================================================
+# Cluster Runner
+# ============================================================
+
+def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
+    """Run all 12 constructors over the canonical data for a case.
+
+    Args:
+        client: NightEyeOSClient
+        case_id: Case ID
+        db_path: Path to graph.db
+
+    Returns:
+        Statistics dict
+    """
+    from nighteye.constructors import ALL_CONSTRUCTORS
+    from nighteye.canonical.engine import normalize_document
+
+    stats = {
+        "constructors_run": 0,
+        "clusters_created": 0,
+        "high_confidence": 0,
+        "anti_forensic": 0,
+    }
+
+    # Instantiate all constructors
+    constructors = [C() for C in ALL_CONSTRUCTORS]
+    stats["constructors_run"] = len(constructors)
+
+    # Find all canonical indices for this case
+    canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
+
+    for index_name in canonical_indices:
+        logger.info("Running behavioral clustering on %s", index_name)
+
+        try:
+            # Scroll through all canonical events
+            for page in client.scroll_search_iter(
+                index=index_name,
+                query={"match_all": {}},
+                page_size=1000,
+            ):
+                events = []
+                for doc in page:
+                    event = normalize_document(doc, case_id)
+                    if event:
+                        events.append(event)
+
+                if not events:
+                    continue
+
+                # Run each constructor over the events
+                for constructor in constructors:
+                    for event in events:
+                        # 1. Check for triggers
+                        new_clusters = constructor.evaluate_event(event)
+                        for cluster in new_clusters:
+                            # 2. Apply signals from the same host context
+                            # (In a real implementation, we'd use a larger time window)
+                            constructor.apply_supporting_signals(cluster, events)
+
+                            # 3. Apply counter-evidence (DB lookup)
+                            constructor.apply_counter_evidence(cluster)
+
+                            # 4. Finalize
+                            constructor.generate_summary(cluster)
+                            save_cluster(db_path, case_id, cluster)
+
+                            stats["clusters_created"] += 1
+                            if cluster.score >= 70:
+                                stats["high_confidence"] += 1
+                            if "anti-forensic" in cluster.constructor_name.lower():
+                                stats["anti_forensic"] += 1
+
+        except Exception as exc:
+            logger.error("Clustering failed for index %s: %s", index_name, exc)
+
+    return stats
+
+
+def save_cluster(db_path: str, case_id: str, cluster: Cluster) -> None:
+    """Save a behavioral cluster to the SQLite graph database."""
+    import json
+    from nighteye.db import connect, execute_with_retry
+    
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    
+    with connect(db_path) as conn:
+        execute_with_retry(
+            conn,
+            """
+            INSERT INTO clusters (
+                cluster_id, case_id, constructor_name, host, 
+                score, strength, status, summary, 
+                trigger_event_id, event_ids, signals, counter_evidence,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cluster_id) DO UPDATE SET
+                score = excluded.score,
+                strength = excluded.strength,
+                summary = excluded.summary,
+                updated_at = excluded.updated_at
+            """,
+            (
+                cluster.cluster_id,
+                case_id,
+                cluster.constructor_name,
+                cluster.host_name,
+                cluster.score,
+                cluster.tier.value,
+                "OPEN",
+                cluster.summary,
+                cluster.trigger_event.event_id,
+                json.dumps([e.event_id for e in cluster.events]),
+                json.dumps(cluster.supporting_signals),
+                json.dumps(cluster.counter_details),
+                now,
+                now
+            )
+        )
+        conn.commit()

@@ -1,13 +1,12 @@
 """Persistence Constructor.
 
 Detects TA0003 (Persistence) techniques.
-Constructs behavioral clusters for mechanisms attackers use to maintain
-access across restarts, such as Registry Run keys, Scheduled Tasks, and
-Services.
+Constructs behavioral clusters for registry run keys, scheduled tasks,
+WMI event subscriptions, services, and startup folders.
 
 References:
-    - CONSTRUCTORS.md § 5.2
-    - MITRE: TA0003, T1547.001, T1543.003, T1053.005
+  - CONSTRUCTORS.md § 5.2
+  - MITRE: TA0003, T1053, T1058, T1060, T1078, T1098, T1100, T1136, T1543, T1546, T1547
 """
 
 from __future__ import annotations
@@ -19,132 +18,199 @@ from nighteye.constructors.base import Cluster, Constructor, CounterSignal, Sign
 
 __all__ = ["PersistenceConstructor"]
 
+# ============================================================
+# Trigger Evaluators
+# ============================================================
 
 def _is_registry_run_key(event: CanonicalEvent) -> bool:
-    """Trigger: Addition or modification of Run/RunOnce registry keys."""
-    if event.canonical_type != CanonicalType.REGISTRY_MODIFICATION:
-        return False
-    key = event.registry_key.lower()
-    return "currentversion\\run" in key
+    """Detect registry run key modification."""
+    if event.canonical_type == CanonicalType.REGISTRY_MODIFICATION:
+        key = event.registry_key or ""
+        run_keys = [
+            "\run\", "\runonce\", "\runonceex\",
+            "\startupapproved\", "\user shell folders\",
+            "\load\", "\winlogon\shell",
+        ]
+        return any(rk in key.lower() for rk in run_keys)
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "run key" in name or "registry run" in name
+    return False
 
+def _is_scheduled_task_creation(event: CanonicalEvent) -> bool:
+    """Detect scheduled task creation."""
+    if event.canonical_type == CanonicalType.SCHEDULED_TASK:
+        return True
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "scheduled task" in name and "created" in name
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "schtasks" in cmd and "/create" in cmd
+    return False
 
-def _is_service_persistent(event: CanonicalEvent) -> bool:
-    """Trigger: Service installed with Auto/Demand start."""
-    if event.canonical_type != CanonicalType.SERVICE_INSTALLATION:
-        return False
-    
-    # We look for services.exe parent or specific event codes if mapped
-    # For now, any service installation is a potential persistence mechanism.
-    return True
+def _is_wmi_event_subscription(event: CanonicalEvent) -> bool:
+    """Detect WMI event subscription."""
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "wmi" in name and "subscription" in name
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "wmi" in cmd and ("event" in cmd or "subscription" in cmd)
+    return False
 
+def _is_service_install(event: CanonicalEvent) -> bool:
+    """Detect service installation."""
+    if event.canonical_type == CanonicalType.SERVICE_INSTALLATION:
+        return True
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "service" in name and "install" in name
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "sc create" in cmd or "sc config" in cmd or "new-service" in cmd
+    return False
 
-def _is_scheduled_task(event: CanonicalEvent) -> bool:
-    """Trigger: Scheduled task created or modified."""
-    return event.canonical_type == CanonicalType.SCHEDULED_TASK
+def _is_startup_folder(event: CanonicalEvent) -> bool:
+    """Detect startup folder modification."""
+    if event.canonical_type == CanonicalType.FILE_CREATION:
+        path = event.target_file.lower()
+        startup_paths = [
+            "\startup\", "\programs\startup\",
+            "\appdata\roaming\microsoft\windows\start menu\programs\startup",
+        ]
+        return any(sp in path for sp in startup_paths)
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "startup" in name and "folder" in name
+    return False
 
+def _is_bits_job_persistence(event: CanonicalEvent) -> bool:
+    """Detect BITS job for persistence."""
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return "bitsadmin" in cmd and ("/addfile" in cmd or "/setnotifycmdline" in cmd)
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "bits" in name and "persistence" in name
+    return False
 
-def _is_startup_folder_write(event: CanonicalEvent) -> bool:
-    """Trigger: File written to a user's Startup folder."""
-    if event.canonical_type not in (CanonicalType.FILE_CREATION, CanonicalType.FILE_MODIFICATION):
-        return False
-    path = event.target_file.lower()
-    return "\\start menu\\programs\\startup" in path
+def _is_dll_search_order_hijacking(event: CanonicalEvent) -> bool:
+    """Detect DLL search order hijacking."""
+    if event.canonical_type == CanonicalType.ALERT:
+        name = event.alert_name.lower()
+        return "dll hijacking" in name or "search order" in name
+    if event.canonical_type == CanonicalType.FILE_CREATION:
+        path = event.target_file.lower()
+        return path.endswith(".dll") and any(sys in path for sys in ["system32", "syswow64"])
+    return False
 
+# ============================================================
+# Supporting Signal Evaluators
+# ============================================================
 
-def _is_sigma_persistence_match(event: CanonicalEvent) -> bool:
-    """Trigger: Hayabusa/Chainsaw alert tagged with persistence."""
-    if event.canonical_type != CanonicalType.ALERT:
-        return False
-    name = event.alert_name.lower()
-    return "persistence" in name or "autorun" in name or "scheduled task" in name
+def _eval_executable_unsigned(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if persistence executable is unsigned."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.ALERT:
+            name = evt.alert_name.lower()
+            if "unsigned" in name:
+                return True
+    return False
 
+def _eval_executable_in_temp(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if persistence executable is in temp directory."""
+    for evt in context:
+        path = (evt.target_file or "").lower()
+        if "\temp\" in path or "\tmp\" in path:
+            return True
+    return False
 
-# --- Supporting Signal Evaluators ---
+def _eval_hidden_or_system_attribute(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if file has hidden or system attribute."""
+    for evt in context:
+        if evt.canonical_type == CanonicalType.ALERT:
+            name = evt.alert_name.lower()
+            if "hidden" in name or "system attribute" in name:
+                return True
+    return False
 
-def _eval_binary_path_unusual(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
-    """Checks if the associated binary is in an unusual path like AppData or Temp."""
-    path = cluster.trigger_event.process_path.lower() or cluster.trigger_event.target_file.lower()
-    if not path:
-        return False
-    
-    return "\\appdata\\" in path or "\\temp\\" in path or "\\programdata\\" in path
+def _eval_no_corresponding_installer(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
+    """Check if no corresponding installer exists."""
+    # Would check for msiexec or setup.exe in temporal proximity
+    has_installer = False
+    for evt in context:
+        if evt.canonical_type == CanonicalType.PROCESS_EXECUTION:
+            proc = evt.process_name.lower()
+            if proc in ["msiexec.exe", "setup.exe", "install.exe"]:
+                has_installer = True
+                break
+    return not has_installer
 
+# ============================================================
+# Counter Signal Evaluators
+# ============================================================
 
-def _eval_binary_unsigned(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
-    """Checks if the binary is unsigned (simulated)."""
-    # Requires PE parsing/Amcache data correlation
-    # For now we stub it based on missing signature fields in raw data
-    raw = cluster.trigger_event.raw_data or {}
-    return "signature" not in str(raw).lower()
+def _eval_signed_by_known_publisher(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if executable is signed by known publisher."""
+    # Would verify signature in production
+    return False, ""
 
+def _eval_documented_software_install(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if this matches documented software installation."""
+    proc = cluster.trigger_event.process_name.lower()
+    if proc in ["msiexec.exe", "setup.exe", "install.exe"]:
+        return True, "Software installer activity"
+    return False, ""
 
-# --- Counter Signal Evaluators ---
+def _eval_gpo_deployment(cluster: Cluster, db: Any) -> tuple[bool, str]:
+    """Check if this matches GPO deployment."""
+    # Would check for GPO-related context
+    return False, ""
 
-def _eval_binary_signed_microsoft(cluster: Cluster, db: Any) -> tuple[bool, str]:
-    """Check if the binary is signed by Microsoft."""
-    # Stubbed lookup
-    return False, "binary not confirmed as Microsoft signed"
-
-
-def _eval_known_software_baseline(cluster: Cluster, db: Any) -> tuple[bool, str]:
-    """Check if the path/hash matches a known legitimate software deployment."""
-    path = cluster.trigger_event.process_path.lower() or cluster.trigger_event.target_file.lower()
-    if not path:
-        return False, "no path available"
-    
-    # Stubbed lookup
-    if "google\\chrome\\application" in path:
-        return True, "matches known Chrome update mechanism"
-        
-    return False, "binary not in known software baseline"
-
+# ============================================================
+# Constructor
+# ============================================================
 
 class PersistenceConstructor(Constructor):
-    """Constructor for detecting Persistence mechanisms."""
-    
     name = "Persistence"
     mitre_tactic = "TA0003"
-    mitre_techniques = ["T1547.001", "T1543.003", "T1053.005", "T1547.009"]
+    mitre_techniques = ["T1053", "T1058", "T1060", "T1078", "T1098", "T1100", "T1136", "T1543", "T1546", "T1547"]
+
+    grouping_window_seconds = 1800  # 30 minutes
+    group_by = ["host", "user"]
 
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("registry_run_key_added", 40, _is_registry_run_key),
-            TriggerRule("service_install_persistent", 35, _is_service_persistent),
-            TriggerRule("scheduled_task_created", 30, _is_scheduled_task),
-            TriggerRule("startup_folder_item_added", 45, _is_startup_folder_write),
-            TriggerRule("sigma_persistence_match", 50, _is_sigma_persistence_match),
+            TriggerRule("registry_run_key", 45, _is_registry_run_key),
+            TriggerRule("scheduled_task_creation", 45, _is_scheduled_task_creation),
+            TriggerRule("wmi_event_subscription", 50, _is_wmi_event_subscription),
+            TriggerRule("service_install", 45, _is_service_install),
+            TriggerRule("startup_folder", 40, _is_startup_folder),
+            TriggerRule("bits_job_persistence", 40, _is_bits_job_persistence),
+            TriggerRule("dll_search_order_hijacking", 45, _is_dll_search_order_hijacking),
         ]
 
     @property
     def supporting_signals(self) -> list[SignalRule]:
         return [
-            SignalRule("binary_path_unusual", 10, _eval_binary_path_unusual),
-            SignalRule("binary_unsigned", 12, _eval_binary_unsigned),
+            SignalRule("executable_unsigned", 12, _eval_executable_unsigned),
+            SignalRule("executable_in_temp", 10, _eval_executable_in_temp),
+            SignalRule("hidden_or_system_attribute", 10, _eval_hidden_or_system_attribute),
+            SignalRule("no_corresponding_installer", 10, _eval_no_corresponding_installer),
         ]
 
     @property
     def counter_signals(self) -> list[CounterSignal]:
         return [
-            CounterSignal("binary_signed_microsoft", 12, _eval_binary_signed_microsoft),
-            CounterSignal("binary_in_known_software_baseline", 12, _eval_known_software_baseline),
+            CounterSignal("signed_by_known_publisher", 12, _eval_signed_by_known_publisher),
+            CounterSignal("documented_software_install", 10, _eval_documented_software_install),
+            CounterSignal("gpo_deployment", 10, _eval_gpo_deployment),
         ]
 
     def generate_summary(self, cluster: Cluster) -> None:
         host = cluster.trigger_event.host_name
-        path = cluster.trigger_event.process_path or cluster.trigger_event.target_file or "unknown file"
-        
-        parts = [f"Persistence mechanism detected on {host}"]
-        
-        if cluster.trigger_name == "registry_run_key_added":
-            parts.append(f"Run key modified for {path}")
-        elif cluster.trigger_name == "service_install_persistent":
-            parts.append(f"Service installed pointing to {path}")
-        elif cluster.trigger_name == "scheduled_task_created":
-            parts.append(f"Scheduled task created")
-        elif cluster.trigger_name == "startup_folder_item_added":
-            parts.append(f"File added to Startup folder: {path}")
-        elif cluster.trigger_name == "sigma_persistence_match":
-            parts.append(f"Sigma detection: {cluster.trigger_event.alert_name}")
-            
-        cluster.summary = ", ".join(parts) + "."
+        trigger = cluster.trigger_name
+        user = cluster.trigger_event.user or "unknown"
+        cluster.summary = f"Persistence detected on {host} by {user}: {trigger}. Possible foothold establishment."
