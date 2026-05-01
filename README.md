@@ -404,8 +404,10 @@ Below are common issues encountered during the NightEye build and deployment, al
 |---|---|---|
 | **OpenSearch Missing** | `systemctl start opensearch` fails with `Unit not found` | Run `sudo docker compose up -d`. NightEye now includes a `docker-compose.yml` for easy infrastructure setup. |
 | **Docker Permissions** | `permission denied` connecting to `docker.sock` | Run docker commands with `sudo` (e.g., `sudo docker compose up -d`). |
-| **Scanning Slowness** | `nighteye ingest` hangs at "Scanning..." on external HDDs | Use the new `--no-recurse` flag if you want to only look at the top-level folder. We also optimized scanning to target specific file types instead of a full recursive walk. |
+| **Scanning Slowness** | `nighteye ingest` hangs at "Scanning..." on external HDDs | Use the new `--no-recurse` flag. We also implemented "Smart Recursion" which automatically ignores the flag for extracted ZIP data so it still finds the evidence inside. |
+| **No Evidence Found** | `No supported evidence files found` after unzipping | Fixed via "Smart Recursion": The system now knows to always look deep into internal extraction folders even if `--no-recurse` is set for the main drive. |
 | **Index Not Found** | `execute_ingest_plan` fails with `404 index_not_found_exception` | We updated the OpenSearch client to gracefully ignore refresh-interval optimizations if the index hasn't been created yet. |
+| **Missing EZ Tools** | `Required EZ Tool not found` on SIFT | Updated tool discovery to support SIFT-style shell scripts and `/usr/local/bin` paths. Added fallback to Python-native parsers. |
 | **Incorrect Client Args** | `TypeError: NightEyeOSClient.__init__() got unexpected keyword argument 'host'` | Always instantiate the client using the `OSConfig` object: `client = NightEyeOSClient(OSConfig(url="..."))`. |
 
 ---
