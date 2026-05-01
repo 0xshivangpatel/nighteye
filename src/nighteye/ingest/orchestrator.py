@@ -39,6 +39,7 @@ from nighteye.ingest.dispatch import (
     EvidenceType,
     detect_evidence_type,
 )
+from nighteye.case import get_case_dir
 from nighteye.ingest.ecs import make_index_name
 
 __all__ = [
@@ -303,7 +304,13 @@ def build_ingest_plan(
             discovered.append((detected, root))
         else:
             # Evidence scan
-            scan_fn = root.rglob if recursive else root.glob
+            # SMART RECURSION: Always recurse into internal extraction folders (they are safe/isolated)
+            # but respect the 'recursive' flag for the external evidence drive.
+            case_dir = get_case_dir()
+            is_internal = case_dir in root.parents if case_dir else False
+            effective_recursive = True if is_internal else recursive
+            
+            scan_fn = root.rglob if effective_recursive else root.glob
             archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01"}
             for item in sorted(scan_fn("*")):
                 if item.is_file():
