@@ -55,7 +55,13 @@ def execute_ingest_plan(
     start_time = time.time()
     modified_indices: set[str] = set()
 
-    for group in plan.groups:
+    try:
+        from tqdm import tqdm
+        group_iter = tqdm(plan.groups, desc="Ingesting Evidence", unit="group", dynamic_ncols=True)
+    except ImportError:
+        group_iter = plan.groups
+
+    for group in group_iter:
         group_start = time.time()
         group.status = "ingesting"
 

@@ -61,7 +61,13 @@ def run_normalization_pass(client: NightEyeOSClient, case_id: str) -> dict[str, 
 
     # Group the canonical events by their target host index for efficient streaming
     # To keep memory footprint low, we'll process one raw index at a time.
-    for raw_index in raw_indices:
+    try:
+        from tqdm import tqdm
+        index_iter = tqdm(raw_indices, desc="Normalizing Indices", unit="index", dynamic_ncols=True)
+    except ImportError:
+        index_iter = raw_indices
+
+    for raw_index in index_iter:
         logger.info("Scanning raw index: %s", raw_index)
         
         # Generator that yields (target_index, doc_dict) for bulk_index_iter

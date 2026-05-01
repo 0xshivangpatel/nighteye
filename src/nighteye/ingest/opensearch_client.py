@@ -448,6 +448,23 @@ class NightEyeOSClient:
         except Exception:
             return []
 
+    def list_indices(self, pattern: str = "*") -> list[str]:
+        """List all indices matching a pattern.
+        
+        Args:
+            pattern: Wildcard pattern (e.g. "case-inc-*").
+            
+        Returns:
+            List of index names.
+        """
+        self._require_connection()
+        assert self._client is not None
+        try:
+            res = self._client.indices.get(index=pattern)
+            return sorted(list(res.keys()))
+        except Exception:
+            return []
+
     def ingest_stats(self, case_id: str) -> dict[str, Any]:
         """Get aggregate ingest statistics for a case.
 

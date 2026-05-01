@@ -37,7 +37,19 @@ def extract_archives(target_dir: Path) -> list[Path]:
     else:
         files_to_check = [p for p in target_dir.rglob("*") if p.is_file()]
 
-    for f in files_to_check:
+    # Filter to only supported archives and images
+    targets = [f for f in files_to_check if f.suffix.lower() in archive_exts or f.suffix.lower() in image_exts]
+    
+    if not targets:
+        return []
+
+    try:
+        from tqdm import tqdm
+        target_iter = tqdm(targets, desc="Unzipping Evidence", unit="file", leave=False)
+    except ImportError:
+        target_iter = targets
+
+    for f in target_iter:
         ext = f.suffix.lower()
         if ext in archive_exts:
             out_dir = extractions_dir / f.stem
@@ -56,8 +68,15 @@ def extract_archives(target_dir: Path) -> list[Path]:
                     check=True
                 )
                 extracted_paths.append(out_dir)
-            except subprocess.CalledProcessError:
-                logger.error("Failed to extract %s with 7zip", f.name)
+            except subprocess.CalledProcessError as e:
+                msg = f"Failed to extract {f.name} with 7zip: {e}"
+                if 'tqdm' in globals() or 'tqdm' in locals():
+                    try:
+                        tqdm.write(msg)
+                    except:
+                        logger.error(msg)
+                else:
+                    logger.error(msg)
                 
         elif ext in image_exts:
             out_dir = extractions_dir / f.stem
@@ -78,11 +97,14 @@ def extract_archives(target_dir: Path) -> list[Path]:
                     check=True
                 )
                 extracted_paths.append(out_dir)
-            except subprocess.CalledProcessError:
-                logger.warning(
-                    "7zip failed to extract image %s. "
-                    "For deep E01 support, manual ewfmount + tsk_recover may be required.", 
-                    f.name
-                )
+            except subprocess.CalledProcessError as e:
+                msg = f"7zip failed to extract image {f.name}: {e}. For deep E01 support, manual ewfmount + tsk_recover may be required."
+                if 'tqdm' in globals() or 'tqdm' in locals():
+                    try:
+                        tqdm.write(msg)
+                    except:
+                        logger.warning(msg)
+                else:
+                    logger.warning(msg)
                 
     return extracted_paths
