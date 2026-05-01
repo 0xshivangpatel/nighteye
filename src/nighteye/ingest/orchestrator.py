@@ -304,11 +304,10 @@ def build_ingest_plan(
             discovered.append((detected, root))
         else:
             # Evidence scan
-            # SMART RECURSION: Always recurse into internal extraction folders (they are safe/isolated)
+            # SMART RECURSION: Always recurse into "extractions" folders (they are safe/isolated)
             # but respect the 'recursive' flag for the external evidence drive.
-            case_dir = get_case_dir()
-            is_internal = case_dir in root.parents if case_dir else False
-            effective_recursive = True if is_internal else recursive
+            is_extraction = "extractions" in str(root).lower()
+            effective_recursive = True if is_extraction else recursive
             
             scan_fn = root.rglob if effective_recursive else root.glob
             archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01"}
