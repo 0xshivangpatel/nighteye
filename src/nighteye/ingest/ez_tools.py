@@ -37,8 +37,21 @@ def is_tool_available(evidence_type: EvidenceType) -> bool:
     """Check if the required EZ Tool is available on PATH."""
     tool_name = _TOOL_MAP.get(evidence_type)
     if not tool_name:
-        return False
-    return shutil.which(tool_name) is not None or shutil.which(f"{tool_name}.exe") is not None
+        # Some types (like KAPE_ZIP or EVTX_FOLDER) don't use a single EZ Tool directly
+        return evidence_type in {EvidenceType.EVTX_FOLDER, EvidenceType.EVTX_FILE, EvidenceType.KAPE_ZIP}
+        
+    # Check standard PATH
+    if shutil.which(tool_name) or shutil.which(f"{tool_name}.exe") or shutil.which(f"{tool_name}.sh"):
+        return True
+        
+    # Check common SIFT/Linux locations explicitly
+    extra_paths = ["/usr/local/bin", "/opt/zimmerman", "/opt/eztools"]
+    for p in extra_paths:
+        for ext in ["", ".exe", ".sh"]:
+            if (Path(p) / f"{tool_name}{ext}").exists():
+                return True
+                
+    return False
 
 
 def run_ez_tool(
@@ -64,9 +77,21 @@ def run_ez_tool(
         return
 
     # Find the executable
-    exe_path = shutil.which(tool_name) or shutil.which(f"{tool_name}.exe")
+    exe_path = shutil.which(tool_name) or shutil.which(f"{tool_name}.exe") or shutil.which(f"{tool_name}.sh")
     if not exe_path:
-        logger.error("EZ Tool not found on PATH: %s", tool_name)
+        # Check common SIFT/Linux locations explicitly
+        extra_paths = ["/usr/local/bin", "/opt/zimmerman", "/opt/eztools"]
+        for p in extra_paths:
+            for ext in ["", ".exe", ".sh"]:
+                candidate = Path(p) / f"{tool_name}{ext}"
+                if candidate.exists():
+                    exe_path = str(candidate)
+                    break
+            if exe_path:
+                break
+                
+    if not exe_path:
+        logger.error("EZ Tool not found: %s", tool_name)
         return
 
     with tempfile.TemporaryDirectory(prefix=f"nighteye_{tool_name}_") as tmpdir:

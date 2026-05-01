@@ -304,8 +304,12 @@ def build_ingest_plan(
         else:
             # Evidence scan
             scan_fn = root.rglob if recursive else root.glob
+            archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01"}
             for item in sorted(scan_fn("*")):
                 if item.is_file():
+                    if item.suffix.lower() in archive_exts:
+                        # Archives are handled by the extraction phase, skip them in the ingest plan
+                        continue
                     detected = detect_evidence_type(item)
                     discovered.append((detected, root))
 
