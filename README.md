@@ -396,6 +396,20 @@ If you're an LLM or human picking this up cold, read in order:
 
 ---
 
+## Troubleshooting & Bug Log
+
+Below are common issues encountered during the NightEye build and deployment, along with their solutions.
+
+| Issue | Symptom | Solution |
+|---|---|---|
+| **OpenSearch Missing** | `systemctl start opensearch` fails with `Unit not found` | Run `sudo docker compose up -d`. NightEye now includes a `docker-compose.yml` for easy infrastructure setup. |
+| **Docker Permissions** | `permission denied` connecting to `docker.sock` | Run docker commands with `sudo` (e.g., `sudo docker compose up -d`). |
+| **Scanning Slowness** | `nighteye ingest` hangs at "Scanning..." on external HDDs | Use the new `--no-recurse` flag if you want to only look at the top-level folder. We also optimized scanning to target specific file types instead of a full recursive walk. |
+| **Index Not Found** | `execute_ingest_plan` fails with `404 index_not_found_exception` | We updated the OpenSearch client to gracefully ignore refresh-interval optimizations if the index hasn't been created yet. |
+| **Incorrect Client Args** | `TypeError: NightEyeOSClient.__init__() got unexpected keyword argument 'host'` | Always instantiate the client using the `OSConfig` object: `client = NightEyeOSClient(OSConfig(url="..."))`. |
+
+---
+
 ## License
 
 MIT. See `LICENSE` once repo is initialized.

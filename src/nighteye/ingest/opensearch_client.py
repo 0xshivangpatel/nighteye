@@ -391,11 +391,18 @@ class NightEyeOSClient:
         """
         self._require_connection()
         assert self._client is not None
-        self._client.indices.put_settings(
-            index=index,
-            body={"index": {"refresh_interval": interval}},
-        )
-        logger.info("Set refresh_interval=%s for %s", interval, index)
+        try:
+            self._client.indices.put_settings(
+                index=index,
+                body={"index": {"refresh_interval": interval}},
+            )
+            logger.info("Set refresh_interval=%s for %s", interval, index)
+        except Exception as e:
+            # Ignore 404s (index doesn't exist yet)
+            if "404" in str(e) or "index_not_found_exception" in str(e):
+                logger.debug("Index %s not found, skipping refresh_interval setting", index)
+            else:
+                raise e
 
     def force_merge(self, index: str, max_segments: int = 1) -> None:
         """Force merge index segments after ingest completes.
