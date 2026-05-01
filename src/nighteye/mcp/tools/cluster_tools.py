@@ -55,21 +55,18 @@ def list_clusters(
         db_path = active.graph_db if active else "graph.db"
 
     sql = """
-        SELECT cluster_id, constructor_name, host, score, strength, status, 
-               trigger_name, trigger_event_timestamp, summary, created_at
+        SELECT cluster_id, cluster_type, primary_host, score, strength, 
+               triggers_fired, time_start, summary, created_at
         FROM clusters WHERE case_id = ? AND score >= ?
     """
     params = [case_id, min_score]
 
     if constructor_name:
-        sql += " AND constructor_name = ?"
+        sql += " AND cluster_type = ?"
         params.append(constructor_name)
     if host:
-        sql += " AND host = ?"
+        sql += " AND primary_host = ?"
         params.append(host)
-    if status:
-        sql += " AND status = ?"
-        params.append(status)
 
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
@@ -79,15 +76,22 @@ def list_clusters(
 
     clusters = []
     for row in rows:
+        # Parse triggers
+        triggers = []
+        if row["triggers_fired"]:
+            try:
+                triggers = json.loads(row["triggers_fired"])
+            except:
+                pass
+
         clusters.append({
             "id": row["cluster_id"],
-            "constructor": row["constructor_name"],
-            "host": row["host"],
+            "constructor": row["cluster_type"],
+            "host": row["primary_host"],
             "score": row["score"],
             "strength": row["strength"],
-            "status": row["status"],
-            "trigger": row["trigger_name"],
-            "trigger_time": row["trigger_event_timestamp"],
+            "trigger": triggers[0] if triggers else "unknown",
+            "trigger_time": row["time_start"],
             "summary": row["summary"],
             "created_at": row["created_at"],
         })
@@ -124,8 +128,8 @@ def get_cluster_details(
         cluster = dict(row)
 
         # Parse JSON fields
-        for field in ["trigger_event", "supporting_signals", "counter_evidence_details", 
-                       "contradicting_clusters", "member_events"]:
+        for field in ["triggers_fired", "supporting_signals", "counter_evidence_details", 
+                       "contradicting_clusters", "member_canonical_ids", "secondary_hosts", "technique_ids"]:
             if cluster.get(field):
                 try:
                     cluster[field] = json.loads(cluster[field])
@@ -154,7 +158,7 @@ def get_cluster_timeline(
 
     with connect(db_path, read_only=True) as conn:
         row = conn.execute(
-            "SELECT member_events, trigger_event, trigger_event_timestamp FROM clusters WHERE cluster_id = ?",
+            "SELECT member_canonical_ids, time_start, time_end FROM clusters WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
 
@@ -218,7 +222,7 @@ def get_cluster_artifacts(
 
     with connect(db_path, read_only=True) as conn:
         row = conn.execute(
-            "SELECT member_events, trigger_event FROM clusters WHERE cluster_id = ?",
+            "SELECT member_canonical_ids FROM clusters WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
 

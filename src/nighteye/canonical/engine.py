@@ -108,16 +108,42 @@ class CanonicalNormalizer:
         self.stats["raw_docs_scanned"] += 1
 
         try:
-            canonical_type = self._determine_canonical_type(doc)
+            source = doc.get("_source", doc)
+            
+            # Check if this is already a CanonicalEvent dictionary (from canonical index)
+            if "canonical_type" in source and "host_name" in source and "event_id" in source:
+                return CanonicalEvent(
+                    event_id=source["event_id"],
+                    case_id=self.case_id,
+                    host_name=source["host_name"],
+                    timestamp=source.get("@timestamp", source.get("timestamp", "")),
+                    canonical_type=CanonicalType(source["canonical_type"]),
+                    source_index=source.get("source_index", ""),
+                    source_doc_id=source.get("source_doc_id", ""),
+                    user=source.get("user", ""),
+                    process_name=source.get("process_name", ""),
+                    process_path=source.get("process_path", ""),
+                    pid=source.get("pid"),
+                    command_line=source.get("command_line", ""),
+                    target_file=source.get("target_file", ""),
+                    remote_ip=source.get("remote_ip", ""),
+                    remote_port=source.get("remote_port"),
+                    registry_key=source.get("registry_key", ""),
+                    alert_name=source.get("alert_name", ""),
+                    alert_level=source.get("alert_level", ""),
+                    raw_data=source.get("raw_data", source),
+                )
+
+            canonical_type = self._determine_canonical_type(source)
             if canonical_type is None:
                 self.stats["skipped"] += 1
                 return None
 
-            host_name = self._extract_host(doc)
-            timestamp = self._extract_timestamp(doc)
+            host_name = self._extract_host(source)
+            timestamp = self._extract_timestamp(source)
 
             # Build canonical event ID
-            canonical_fields = f"{host_name}:{canonical_type.value}:{timestamp}:{self._extract_key_fields(doc, canonical_type)}"
+            canonical_fields = f"{host_name}:{canonical_type.value}:{timestamp}:{self._extract_key_fields(source, canonical_type)}"
             event_id = hashlib.sha256(
                 f"{self.case_id}:{canonical_fields}".encode()
             ).hexdigest()[:32]
@@ -130,18 +156,18 @@ class CanonicalNormalizer:
                 canonical_type=canonical_type,
                 source_index=doc.get("_index", ""),
                 source_doc_id=doc.get("_id", ""),
-                user=self._extract_user(doc),
-                process_name=self._extract_process_name(doc),
-                process_path=self._extract_process_path(doc),
-                pid=self._extract_pid(doc),
-                command_line=self._extract_command_line(doc),
-                target_file=self._extract_file_path(doc),
-                remote_ip=self._extract_remote_ip(doc),
-                remote_port=self._extract_remote_port(doc),
-                registry_key=self._extract_registry_key(doc),
-                alert_name=self._extract_alert_name(doc),
-                alert_level=self._extract_alert_level(doc),
-                raw_data=doc,
+                user=self._extract_user(source),
+                process_name=self._extract_process_name(source),
+                process_path=self._extract_process_path(source),
+                pid=self._extract_pid(source),
+                command_line=self._extract_command_line(source),
+                target_file=self._extract_file_path(source),
+                remote_ip=self._extract_remote_ip(source),
+                remote_port=self._extract_remote_port(source),
+                registry_key=self._extract_registry_key(source),
+                alert_name=self._extract_alert_name(source),
+                alert_level=self._extract_alert_level(source),
+                raw_data=source,
             )
 
             self.stats["canonical_docs_created"] += 1

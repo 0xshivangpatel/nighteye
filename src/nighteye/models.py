@@ -251,22 +251,56 @@ class Hypothesis:
     def from_dict(cls, d: dict[str, Any]) -> Hypothesis:
         confidence = None
         if d.get("confidence"):
-            confidence = ConfidenceBreakdown.from_json(json.dumps(d["confidence"]))
+            conf_data = d["confidence"]
+            if isinstance(conf_data, str):
+                confidence = ConfidenceBreakdown.from_json(conf_data)
+            else:
+                confidence = ConfidenceBreakdown.from_json(json.dumps(conf_data))
+
+        raw_refs = d.get("evidence_refs", [])
+        if isinstance(raw_refs, str):
+            try:
+                raw_refs = json.loads(raw_refs)
+            except:
+                raw_refs = []
         evidence_refs = [
-            EvidenceRef.from_json(json.dumps(e)) for e in d.get("evidence_refs", [])
+            EvidenceRef.from_json(json.dumps(e)) if not isinstance(e, EvidenceRef) else e 
+            for e in raw_refs
         ]
+
+        raw_links = d.get("causal_links", [])
+        if isinstance(raw_links, str):
+            try:
+                raw_links = json.loads(raw_links)
+            except:
+                raw_links = []
         causal_links = [
-            CausalLink.from_json(json.dumps(c)) for c in d.get("causal_links", [])
+            CausalLink.from_json(json.dumps(c)) if not isinstance(c, CausalLink) else c 
+            for c in raw_links
         ]
+        raw_tech = d.get("technique_ids", [])
+        if isinstance(raw_tech, str):
+            try:
+                raw_tech = json.loads(raw_tech)
+            except:
+                raw_tech = []
+        
+        raw_audits = d.get("audit_ids", [])
+        if isinstance(raw_audits, str):
+            try:
+                raw_audits = json.loads(raw_audits)
+            except:
+                raw_audits = []
+
         cv = d.get("challenge_verdict")
         return cls(
-            id=d["id"],
+            id=d.get("hypothesis_id", d.get("id")),
             case_id=d["case_id"],
             examiner=d["examiner"],
             title=d["title"],
             observation=d["observation"],
             interpretation=d["interpretation"],
-            technique_ids=list(d.get("technique_ids", [])),
+            technique_ids=list(raw_tech),
             status=HypothesisStatus(d["status"]),
             staged_at=_parse_dt(d["staged_at"]),  # type: ignore[arg-type]
             modified_at=_parse_dt(d["modified_at"]),  # type: ignore[arg-type]
@@ -277,7 +311,7 @@ class Hypothesis:
             rejection_reason=d.get("rejection_reason"),
             contradicted_by=d.get("contradicted_by"),
             evidence_refs=evidence_refs,
-            audit_ids=list(d.get("audit_ids", [])),
+            audit_ids=list(raw_audits),
             confidence=confidence,
             provenance_tier=ProvenanceTier(d.get("provenance_tier", "NONE")),
             causal_links=causal_links,

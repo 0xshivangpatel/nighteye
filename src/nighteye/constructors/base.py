@@ -76,11 +76,23 @@ class Cluster:
         self.score = base_score
         self.tier = get_tier(self.score)
         self.summary = ""
+        
+        # New fields for schema compatibility
+        self.triggers_fired: list[str] = [trigger_name]
+        self.mitre_tactic: str = ""
+        self.technique_ids: list[str] = []
+        self.time_start: str = trigger_event.timestamp
+        self.time_end: str = trigger_event.timestamp
 
     def add_event(self, event: CanonicalEvent) -> None:
         """Add a supporting canonical event to this cluster."""
         if not any(e.event_id == event.event_id for e in self.events):
             self.events.append(event)
+            # Update temporal bounds
+            if event.timestamp < self.time_start:
+                self.time_start = event.timestamp
+            if event.timestamp > self.time_end:
+                self.time_end = event.timestamp
 
     def add_supporting_signal(self, name: str, weight: int) -> None:
         """Add a supporting signal and recalculate score."""
@@ -262,42 +274,67 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
 
 
 def save_cluster(db_path: str, case_id: str, cluster: Cluster) -> None:
-    """Save a behavioral cluster to the SQLite graph database."""
+    """Save a behavioral cluster to the SQLite database."""
     import json
+    from datetime import datetime, timezone
     from nighteye.db import connect, execute_with_retry
+
+    now = datetime.now(timezone.utc).isoformat()
     
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    
+    # Determine secondary hosts (all hosts in cluster except primary)
+    hosts = {e.host_name for e in cluster.events if e.host_name}
+    secondary_hosts = list(hosts - {cluster.host_name})
+
+    # Map strength to allowed values
+    strength_map = {
+        ClusterTier.STRONG: "STRONG",
+        ClusterTier.MODERATE: "MODERATE",
+        ClusterTier.WEAK: "WEAK",
+        ClusterTier.NOISE: "NOISE"
+    }
+    strength = strength_map.get(cluster.tier, "MODERATE")
+
     with connect(db_path) as conn:
         execute_with_retry(
             conn,
             """
             INSERT INTO clusters (
-                cluster_id, case_id, constructor_name, host, 
-                score, strength, status, summary, 
-                trigger_event_id, event_ids, signals, counter_evidence,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cluster_id, case_id, cluster_type, strength, score,
+                triggers_fired, supporting_signals, counter_signals,
+                counter_evidence_details, contradicting_clusters,
+                member_canonical_ids, primary_host, primary_user,
+                secondary_hosts, time_start, time_end,
+                technique_ids, mitre_tactic, summary, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cluster_id) DO UPDATE SET
                 score = excluded.score,
                 strength = excluded.strength,
                 summary = excluded.summary,
-                updated_at = excluded.updated_at
+                triggers_fired = excluded.triggers_fired,
+                supporting_signals = excluded.supporting_signals,
+                counter_signals = excluded.counter_signals,
+                time_end = excluded.time_end
             """,
             (
                 cluster.cluster_id,
                 case_id,
                 cluster.constructor_name,
-                cluster.host_name,
+                strength,
                 cluster.score,
-                cluster.tier.value,
-                "OPEN",
-                cluster.summary,
-                cluster.trigger_event.event_id,
-                json.dumps([e.event_id for e in cluster.events]),
+                json.dumps(cluster.triggers_fired),
                 json.dumps(cluster.supporting_signals),
+                json.dumps([c["signal"] for c in cluster.counter_details if c["applies"]]),
                 json.dumps(cluster.counter_details),
-                now,
+                json.dumps([]), # contradicting_clusters
+                json.dumps([e.event_id for e in cluster.events]),
+                cluster.host_name,
+                cluster.trigger_event.user or "unknown",
+                json.dumps(secondary_hosts),
+                cluster.time_start,
+                cluster.time_end,
+                json.dumps(cluster.technique_ids),
+                cluster.mitre_tactic,
+                cluster.summary,
                 now
             )
         )
