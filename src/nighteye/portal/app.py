@@ -68,6 +68,36 @@ async def list_clusters(request: Request):
     )
 
 
+@app.get("/cluster/{cluster_id}", response_class=HTMLResponse)
+async def view_cluster(request: Request, cluster_id: str):
+    """View details, timeline, and artifacts for a specific cluster."""
+    # Mock data for demonstration
+    mock_cluster = {
+        "id": cluster_id,
+        "type": "Lateral Movement",
+        "tier": "STRONG",
+        "score": 90,
+        "host": "DC01",
+        "summary": "Lateral movement pattern detected on DC01. Network logon (Type 3) by stark\\admin from 10.0.0.50 followed by PsExec service installation.",
+        "timeline": [
+            {"time": "2026-04-30 14:22:10 UTC", "event": "Network Logon (Type 3) from 10.0.0.50", "type": "AUTHENTICATION"},
+            {"time": "2026-04-30 14:22:15 UTC", "event": "File write to C$\\ADMIN$\\PSEXESVC.exe", "type": "FILE_MODIFICATION"},
+            {"time": "2026-04-30 14:22:18 UTC", "event": "Service Installed: PSEXESVC", "type": "SERVICE_INSTALLATION"},
+        ],
+        "artifacts": [
+            {"type": "extracted_string", "pattern": "IPv4", "value": "10.0.0.50", "source": "memory.dmp"},
+            {"type": "extracted_string", "pattern": "IPv4", "value": "192.168.1.100", "source": "memory.dmp"},
+            {"type": "cobalt_strike_config", "pattern": "C2 Domain", "value": "update.windows-services.net", "source": "memory.dmp"}
+        ]
+    }
+    
+    return templates.TemplateResponse(
+        request=request,
+        name="cluster_detail.html",
+        context={"cluster": mock_cluster}
+    )
+
+
 @app.get("/hypotheses", response_class=HTMLResponse)
 async def list_hypotheses(request: Request):
     """View all hypotheses."""

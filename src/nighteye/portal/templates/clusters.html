@@ -27,7 +27,7 @@
         </thead>
         <tbody class="divide-y">
             {% for cluster in clusters %}
-            <tr class="hover:bg-gray-50 cursor-pointer">
+            <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/cluster/{{ cluster.id }}'">
                 <td class="px-6 py-4 font-mono text-cyan-600">{{ cluster.id }}</td>
                 <td class="px-6 py-4 font-medium">{{ cluster.host }}</td>
                 <td class="px-6 py-4">{{ cluster.type }}</td>

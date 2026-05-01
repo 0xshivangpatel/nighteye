@@ -163,6 +163,10 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
             if is_volatility_available():
                 yield from run_volatility(evidence.path, host_name=host_name, case_id=case_id)
                 
+            from nighteye.ingest.carvers import run_bstrings, run_1768
+            yield from run_bstrings(evidence.path, host_name=host_name, case_id=case_id)
+            yield from run_1768(evidence.path, host_name=host_name, case_id=case_id)
+                
             from nighteye.ingest.memprocfs import extract_memprocfs, is_memprocfs_available
             if is_memprocfs_available():
                 # MemProcFS extracts files, it doesn't yield docs directly.
