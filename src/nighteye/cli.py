@@ -277,12 +277,14 @@ def case_reopen_cmd(case_id: str) -> None:
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.option("--os-host", default="localhost", help="OpenSearch host (default: localhost).")
 @click.option("--os-port", default=9200, help="OpenSearch port (default: 9200).")
+@click.option("--no-recurse", is_flag=True, help="Only look for evidence in the top-level directory (no subdirectories).")
 def ingest(
     evidence_path: Path,
     explicit_host: str | None,
     yes: bool,
     os_host: str,
     os_port: int,
+    no_recurse: bool,
 ) -> None:
     """Ingest forensic evidence (EVTX, EZ Tools Output, etc.) into OpenSearch.
     
@@ -298,7 +300,7 @@ def ingest(
     
     click.echo(f"Scanning for compressed evidence (E01, ZIP, 7z) in {evidence_path}...")
     from nighteye.ingest.extract import extract_archives
-    extractions = extract_archives(evidence_path)
+    extractions = extract_archives(evidence_path, recursive=not no_recurse)
     
     roots = [evidence_path] + extractions
     
@@ -308,6 +310,7 @@ def ingest(
         roots=roots,
         case_id=case_id,
         explicit_host=explicit_host,
+        recursive=not no_recurse,
     )
     
     if not plan.groups:

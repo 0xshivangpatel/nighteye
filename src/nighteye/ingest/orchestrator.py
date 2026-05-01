@@ -266,6 +266,7 @@ def build_ingest_plan(
     case_id: str,
     explicit_host: str | None = None,
     exclude_types: set[EvidenceType] | None = None,
+    recursive: bool = True,
 ) -> IngestPlan:
     """Scan a directory and build a complete ingest plan.
 
@@ -301,8 +302,9 @@ def build_ingest_plan(
             detected = detect_evidence_type(root)
             discovered.append((detected, root))
         else:
-            # Recursive scan
-            for item in sorted(root.rglob("*")):
+            # Evidence scan
+            scan_fn = root.rglob if recursive else root.glob
+            for item in sorted(scan_fn("*")):
                 if item.is_file():
                     detected = detect_evidence_type(item)
                     discovered.append((detected, root))

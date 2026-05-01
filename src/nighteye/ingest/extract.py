@@ -14,7 +14,7 @@ from nighteye.case import get_case_dir
 
 logger = logging.getLogger("nighteye.ingest.extract")
 
-def extract_archives(target_dir: Path) -> list[Path]:
+def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
     """Scan and extract all supported archives in the target directory.
     
     Returns a list of directories containing the extracted evidence.
@@ -37,9 +37,10 @@ def extract_archives(target_dir: Path) -> list[Path]:
     else:
         # Targeted scanning is much faster than rglob("*") on slow HDDs
         targets = []
+        scan_fn = target_dir.rglob if recursive else target_dir.glob
         for ext in (archive_exts | image_exts):
-            targets.extend(list(target_dir.rglob(f"*{ext}")))
-            targets.extend(list(target_dir.rglob(f"*{ext.upper()}")))
+            targets.extend(list(scan_fn(f"*{ext}")))
+            targets.extend(list(scan_fn(f"*{ext.upper()}")))
     
     if not targets:
         return []
