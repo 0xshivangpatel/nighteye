@@ -214,7 +214,7 @@ class CanonicalNormalizer:
             # Fallback: from source_file path
             source = doc.get("nighteye", {}).get("source_file", "")
             if source:
-                parts = source.replace("\", "/").split("/")
+                parts = source.replace("\\", "/").split("/")
                 # Heuristic: look for host-like directory
                 for part in parts:
                     if any(p in part.lower() for p in ["dc", "srv", "wkstn", "pc", "host"]):

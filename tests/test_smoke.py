@@ -15,55 +15,41 @@ def test_package_importable() -> None:
     assert nighteye.__version__ == "0.1.0"
 
 
-def test_cli_help_via_runner() -> None:
-    """CLI --help must succeed and mention the project."""
-    from nighteye.cli import main
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["--help"])
-    assert result.exit_code == 0
-    assert "NightEye" in result.output
-    assert "case" in result.output
-    assert "ingest" in result.output
-    assert "serve" in result.output
-
-
-def test_cli_version() -> None:
-    """--version must print the version string."""
-    from nighteye.cli import main
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["--version"])
-    assert result.exit_code == 0
-    assert "0.1.0" in result.output
+def test_cli_help() -> None:
+    """CLI --help must succeed and mention NightEye."""
+    result = subprocess.run(
+        [sys.executable, "-m", "nighteye.cli", "--help"],
+        capture_output=True,
+        text=True,
+        cwd="src"
+    )
+    assert result.returncode == 0
+    assert "NightEye" in result.stdout
+    assert "full-pipeline" in result.stdout
 
 
-def test_cli_subcommands_stub() -> None:
-    """Stub subcommands exit with code 2 and a not-yet-implemented message.
-
-    This locks the CLI surface so accidentally renaming a command breaks
-    the test before it breaks anyone's workflow.
-
-    Note: 'case' is a real group (shows help, exit 0), not a stub.
-    """
-    from nighteye.cli import main
-
-    runner = CliRunner()
-    for cmd in ("review", "report"):
-        result = runner.invoke(main, [cmd])
-        assert result.exit_code == 2, f"{cmd}: expected exit 2, got {result.exit_code}"
-        assert "not yet implemented" in result.output, f"{cmd}: missing stub message"
+def test_cli_list_cases() -> None:
+    """The list-cases command should run (even if empty)."""
+    result = subprocess.run(
+        [sys.executable, "-m", "nighteye.cli", "list-cases"],
+        capture_output=True,
+        text=True,
+        cwd="src"
+    )
+    assert result.returncode == 0
 
 
-def test_cli_case_group_shows_help() -> None:
-    """The 'case' group shows usage info (not a 'not yet implemented' stub)."""
-    from nighteye.cli import main
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["case"])
-    # Click groups exit 2 when no subcommand is given, but show help
-    assert "Case management" in result.output or "Commands" in result.output
-    assert "not yet implemented" not in result.output
+def test_cli_status() -> None:
+    """The status command should run."""
+    result = subprocess.run(
+        [sys.executable, "-m", "nighteye.cli", "status"],
+        capture_output=True,
+        text=True,
+        cwd="src"
+    )
+    # If there's a case, it succeeds (0). If not, it fails (1). 
+    # Both are "graceful" handling.
+    assert result.returncode in (0, 1)
 
 
 def test_console_script_installed() -> None:

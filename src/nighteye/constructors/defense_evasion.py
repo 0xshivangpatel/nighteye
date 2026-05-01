@@ -29,7 +29,7 @@ def _is_amsi_bypass(event: CanonicalEvent) -> bool:
         amsi_indicators = [
             "amsi", "antimalware", "scan", "bypass",
             "[ref].assembly.gettype", "system.management.automation.amsiutils",
-            "a"ms"i", "a`m`si", "amsiinitfailed"
+            "a'ms'i", "a`m`si", "amsiinitfailed"
         ]
         return any(ind in cmd for ind in amsi_indicators)
     if event.canonical_type == CanonicalType.ALERT:

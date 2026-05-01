@@ -59,12 +59,12 @@ def _eval_affected_file_in_persistence_path(cluster: Cluster, context: list[Cano
     for evt in context:
         path = (evt.target_file or "").lower()
         persistence_paths = [
-            "\windows\system32\",
-            "\windows\syswow64\",
-            "\program files\",
-            "\users\public\",
-            "\startup\",
-            "\run\",
+            "\\windows\\system32\\",
+            "\\windows\\syswow64\\",
+            "\\program files\\",
+            "\\users\\public\\",
+            "\\startup\\",
+            "\\run\\",
         ]
         if any(p in path for p in persistence_paths):
             return True
@@ -84,7 +84,7 @@ def _eval_affected_file_in_system32(cluster: Cluster, context: list[CanonicalEve
     """Check if timestomped file is in system32."""
     for evt in context:
         path = (evt.target_file or "").lower()
-        if "\windows\system32\" in path or "\windows\syswow64\" in path:
+        if "\\windows\\system32\\" in path or "\\windows\\syswow64\\" in path:
             return True
     return False
 

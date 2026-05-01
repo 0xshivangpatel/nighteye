@@ -74,7 +74,7 @@ def _is_ransom_note(event: CanonicalEvent) -> bool:
         "readme", "how_to_decrypt", "_readme", "recover", "restore",
         "decrypt", "instructions", "help_decrypt", "about_files"
     ]
-    filename = path.split("\")[-1] if "\" in path else path.split("/")[-1]
+    filename = path.split("\\")[-1] if "\\" in path else path.split("/")[-1]
     return any(pat in filename for pat in note_patterns) and filename.endswith(".txt")
 
 def _is_mass_service_stop(event: CanonicalEvent) -> bool:

@@ -48,6 +48,21 @@ class CaseInfo:
     created_at: str
     active: bool = False
 
+    @property
+    def id(self) -> str:
+        """Alias for case_id used by the new CLI."""
+        return self.case_id
+
+    @property
+    def case_name(self) -> str:
+        """Alias for name used by the new CLI."""
+        return self.name
+
+    @property
+    def graph_db(self) -> str:
+        """Path to the SQLite database."""
+        return str(self.case_dir / "graph.db")
+
 
 def default_cases_dir() -> Path:
     """Return the default cases root directory."""
@@ -194,6 +209,26 @@ def get_active_case_dir() -> Path | None:
     if not p.exists() or not (p / "CASE.yaml").exists():
         return None
     return p
+
+
+def get_active_case() -> CaseInfo | None:
+    """Return CaseInfo for the active case, or None if none set."""
+    active_dir = get_active_case_dir()
+    if not active_dir:
+        return None
+    try:
+        meta = load_case_meta(active_dir)
+        return CaseInfo(
+            case_id=meta.get("case_id", active_dir.name),
+            name=meta.get("name", ""),
+            status=meta.get("status", "unknown"),
+            examiner=meta.get("examiner", ""),
+            case_dir=active_dir.resolve(),
+            created_at=meta.get("created_at", ""),
+            active=True,
+        )
+    except CaseError:
+        return None
 
 
 def get_case_dir(
@@ -364,8 +399,10 @@ __all__ = [
     "case_status",
     "clear_active_case",
     "close_case",
+    "create_case",
     "default_cases_dir",
     "delete_case",
+    "get_active_case",
     "get_active_case_dir",
     "get_case_dir",
     "init_case",
@@ -376,3 +413,6 @@ __all__ = [
     "set_active_case",
     "transaction",
 ]
+
+# Aliases for new CLI
+create_case = init_case

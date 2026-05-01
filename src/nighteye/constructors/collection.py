@@ -38,7 +38,7 @@ def _is_archive_creation_unusual(event: CanonicalEvent) -> bool:
     if not path.endswith(archive_exts):
         return False
     # Unusual paths: Temp, AppData, non-standard backup locations
-    unusual_paths = ["\temp\", "\appdata\", "\programdata\", "\users\public\"]
+    unusual_paths = ["\\temp\\", "\\appdata\\", "\\programdata\\", "\\users\\public\\"]
     return any(p in path for p in unusual_paths)
 
 def _is_password_grep(event: CanonicalEvent) -> bool:
@@ -88,8 +88,8 @@ def _eval_occurred_after_lateral_movement(cluster: Cluster, context: list[Canoni
 
 def _eval_high_value_paths(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
     """Check if files from high-value paths were accessed."""
-    high_value = ["\finance\", "\hr\", "\accounting\", "\payroll\", 
-                  "\source\", "\repo\", "\git\", "\dev\"]
+    high_value = ["\\finance\\", "\\hr\\", "\\accounting\\", "\\payroll\\", 
+                  "\\source\\", "\\repo\\", "\\git\\", "\\dev\\"]
     for evt in context:
         path = (evt.target_file or "").lower()
         if any(hv in path for hv in high_value):

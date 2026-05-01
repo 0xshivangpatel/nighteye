@@ -27,9 +27,9 @@ def _is_registry_run_key(event: CanonicalEvent) -> bool:
     if event.canonical_type == CanonicalType.REGISTRY_MODIFICATION:
         key = event.registry_key or ""
         run_keys = [
-            "\run\", "\runonce\", "\runonceex\",
-            "\startupapproved\", "\user shell folders\",
-            "\load\", "\winlogon\shell",
+            "\\run\\", "\\runonce\\", "\\runonceex\\",
+            "\\startupapproved\\", "\\user shell folders\\",
+            "\\load\\", "\\winlogon\\shell",
         ]
         return any(rk in key.lower() for rk in run_keys)
     if event.canonical_type == CanonicalType.ALERT:
@@ -76,8 +76,8 @@ def _is_startup_folder(event: CanonicalEvent) -> bool:
     if event.canonical_type == CanonicalType.FILE_CREATION:
         path = event.target_file.lower()
         startup_paths = [
-            "\startup\", "\programs\startup\",
-            "\appdata\roaming\microsoft\windows\start menu\programs\startup",
+            "\\startup\\", "\\programs\\startup\\",
+            "\\appdata\\roaming\\microsoft\\windows\\start menu\\programs\\startup",
         ]
         return any(sp in path for sp in startup_paths)
     if event.canonical_type == CanonicalType.ALERT:
@@ -122,7 +122,7 @@ def _eval_executable_in_temp(cluster: Cluster, context: list[CanonicalEvent]) ->
     """Check if persistence executable is in temp directory."""
     for evt in context:
         path = (evt.target_file or "").lower()
-        if "\temp\" in path or "\tmp\" in path:
+        if "\\temp\\" in path or "\\tmp\\" in path:
             return True
     return False
 

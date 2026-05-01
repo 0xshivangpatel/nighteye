@@ -51,7 +51,7 @@ def _is_archive_before_transfer(event: CanonicalEvent) -> bool:
     if not path.endswith(archive_exts):
         return False
     # Check if in staging path
-    staging_paths = ["\temp\", "\appdata\", "\programdata\", "\users\public\"]
+    staging_paths = ["\\temp\\", "\\appdata\\", "\\programdata\\", "\\users\\public\\"]
     return any(p in path for p in staging_paths)
 
 def _is_dns_exfil_pattern(event: CanonicalEvent) -> bool:
