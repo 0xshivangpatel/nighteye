@@ -295,10 +295,17 @@ def ingest(
         sys.exit(1)
         
     case_id = case_dir.name
-    click.echo(f"Building ingest plan for case {case_id}...")
+    
+    click.echo(f"Scanning for compressed evidence (E01, ZIP, 7z) in {evidence_path}...")
+    from nighteye.ingest.extract import extract_archives
+    extractions = extract_archives(evidence_path)
+    
+    roots = [evidence_path] + extractions
+    
+    click.echo(f"Building ingest plan for case {case_id} across {len(roots)} source directories...")
     
     plan = build_ingest_plan(
-        root=evidence_path,
+        roots=roots,
         case_id=case_id,
         explicit_host=explicit_host,
     )
@@ -309,7 +316,7 @@ def ingest(
         
     summary = plan.summary()
     click.echo("\nIngest Plan Summary:")
-    click.echo(f"  Root:          {summary['root']}")
+    click.echo(f"  Roots:         {', '.join(summary['roots'])}")
     click.echo(f"  Hosts found:   {summary['host_count']} ({', '.join(summary['hosts'][:3])}{'...' if summary['host_count'] > 3 else ''})")
     click.echo(f"  Files:         {summary['total_files']}")
     click.echo(f"  Data size:     {summary['total_bytes_human']}")

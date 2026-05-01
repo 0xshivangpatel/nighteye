@@ -115,7 +115,7 @@ class IngestPlan:
     Built by ``build_ingest_plan()`` before ingest begins. Shows what
     will be ingested, from where, into which indices.
     """
-    root: Path
+    roots: list[Path]
     case_id: str
     groups: list[IngestGroup] = field(default_factory=list)
     skipped: list[DetectedEvidence] = field(default_factory=list)
@@ -132,7 +132,7 @@ class IngestPlan:
             type_counts[key] = type_counts.get(key, 0) + len(g.files)
 
         return {
-            "root": str(self.root),
+            "roots": [str(r) for r in self.roots],
             "case_id": self.case_id,
             "hosts": hosts,
             "host_count": len(hosts),
@@ -262,7 +262,7 @@ def _sanitize_host(name: str) -> str:
 
 
 def build_ingest_plan(
-    root: Path,
+    roots: list[Path],
     case_id: str,
     explicit_host: str | None = None,
     exclude_types: set[EvidenceType] | None = None,
@@ -273,7 +273,7 @@ def build_ingest_plan(
     100-200GB of forensic data and it figures out everything.
 
     Args:
-        root: Root directory to scan (external hard disk, KAPE output, etc.)
+        roots: Root directories to scan (external hard disk, KAPE output, etc.)
         case_id: Case ID for index naming.
         explicit_host: If provided, all evidence is attributed to this host.
             Otherwise, hosts are auto-detected from directory structure.
@@ -283,34 +283,35 @@ def build_ingest_plan(
         An IngestPlan ready for execution.
     """
     exclude = exclude_types or {EvidenceType.UNKNOWN}
-    plan = IngestPlan(root=root, case_id=case_id)
-
-    if not root.exists():
-        logger.error("Evidence path does not exist: %s", root)
-        return plan
+    plan = IngestPlan(roots=roots, case_id=case_id)
 
     # Phase 1: Discover all evidence files
-    discovered: list[DetectedEvidence] = []
+    discovered: list[tuple[DetectedEvidence, Path]] = []
 
-    if root.is_file():
-        detected = detect_evidence_type(root)
-        discovered.append(detected)
-    else:
-        # Recursive scan
-        for item in sorted(root.rglob("*")):
-            if item.is_file():
-                detected = detect_evidence_type(item)
-                discovered.append(detected)
+    for root in roots:
+        if not root.exists():
+            logger.warning("Evidence path does not exist: %s", root)
+            continue
+
+        if root.is_file():
+            detected = detect_evidence_type(root)
+            discovered.append((detected, root))
+        else:
+            # Recursive scan
+            for item in sorted(root.rglob("*")):
+                if item.is_file():
+                    detected = detect_evidence_type(item)
+                    discovered.append((detected, root))
 
     # Phase 2: Group by host + artifact type
     groups_map: dict[tuple[str, EvidenceType], IngestGroup] = {}
 
-    for evidence in discovered:
+    for evidence, ev_root in discovered:
         if evidence.evidence_type in exclude:
             plan.skipped.append(evidence)
             continue
 
-        host = resolve_host_name(evidence.path, root, explicit_host)
+        host = resolve_host_name(evidence.path, ev_root, explicit_host)
         key = (host, evidence.evidence_type)
 
         if key not in groups_map:
