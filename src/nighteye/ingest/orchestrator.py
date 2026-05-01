@@ -262,7 +262,7 @@ def _sanitize_host(name: str) -> str:
 
 
 def build_ingest_plan(
-    roots: list[Path],
+    roots: Path | list[Path],
     case_id: str,
     explicit_host: str | None = None,
     exclude_types: set[EvidenceType] | None = None,
@@ -273,7 +273,7 @@ def build_ingest_plan(
     100-200GB of forensic data and it figures out everything.
 
     Args:
-        roots: Root directories to scan (external hard disk, KAPE output, etc.)
+        roots: Root directory or list of directories to scan.
         case_id: Case ID for index naming.
         explicit_host: If provided, all evidence is attributed to this host.
             Otherwise, hosts are auto-detected from directory structure.
@@ -282,6 +282,10 @@ def build_ingest_plan(
     Returns:
         An IngestPlan ready for execution.
     """
+    # Normalize: accept a single Path or a list
+    if isinstance(roots, Path):
+        roots = [roots]
+    
     exclude = exclude_types or {EvidenceType.UNKNOWN}
     plan = IngestPlan(roots=roots, case_id=case_id)
 
