@@ -243,8 +243,36 @@ def _stream_directory(
                     item, host_name=host_name,
                     source_file=str(item), audit_id=file_audit_id,
                 )
+            elif detected.evidence_type == EvidenceType.PREFETCH:
+                from nighteye.ingest.python_prefetch import parse_prefetch
+                yield from parse_prefetch(
+                    item, host_name=host_name,
+                    source_file=str(item), audit_id=file_audit_id,
+                )
+            elif detected.evidence_type == EvidenceType.MFT:
+                from nighteye.ingest.python_mft import parse_mft
+                yield from parse_mft(
+                    item, host_name=host_name,
+                    source_file=str(item), audit_id=file_audit_id,
+                )
             else:
                 yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
+            continue
+
+        # LNK files — try pylnk3, fall back to metadata
+        if detected.evidence_type == EvidenceType.LNK:
+            from nighteye.ingest.python_lnk import parse_lnk
+            docs = list(parse_lnk(item, host_name=host_name, source_file=str(item), audit_id=file_audit_id))
+            if docs:
+                yield from docs
+            else:
+                yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
+            continue
+
+        # CSV/JSON/TXT timeline data
+        if detected.evidence_type == EvidenceType.WIN_TIMELINE:
+            from nighteye.ingest.python_csv_json import parse_csv_json
+            yield from parse_csv_json(item, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
             continue
 
         # Other recognized but unparseable-here types (LNK, JUMPLIST,
@@ -440,14 +468,36 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
                     evidence.path, host_name=host_name,
                     source_file=str(evidence.path), audit_id=audit_id,
                 )
+            elif artifact_type == EvidenceType.PREFETCH:
+                from nighteye.ingest.python_prefetch import parse_prefetch
+                yield from parse_prefetch(
+                    evidence.path, host_name=host_name,
+                    source_file=str(evidence.path), audit_id=audit_id,
+                )
+            elif artifact_type == EvidenceType.MFT:
+                from nighteye.ingest.python_mft import parse_mft
+                yield from parse_mft(
+                    evidence.path, host_name=host_name,
+                    source_file=str(evidence.path), audit_id=audit_id,
+                )
             else:
-                # No parser available — metadata doc for provenance
                 yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
             continue
 
-        # 4. Recognized but no parser yet (LNK, JUMPLIST, WIN_TIMELINE,
-        # PCAP, AUTH_LOG, ...) — emit metadata doc so file is indexed.
-        if artifact_type != EvidenceType.UNKNOWN:
+        # 4. Recognized but no parser yet — try Python fallbacks
+        if artifact_type == EvidenceType.LNK:
+            from nighteye.ingest.python_lnk import parse_lnk
+            docs = list(parse_lnk(evidence.path, host_name=host_name,
+                                   source_file=str(evidence.path), audit_id=audit_id))
+            if docs:
+                yield from docs
+            else:
+                yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
+        elif artifact_type == EvidenceType.WIN_TIMELINE:
+            from nighteye.ingest.python_csv_json import parse_csv_json
+            yield from parse_csv_json(evidence.path, host_name=host_name,
+                                       source_file=str(evidence.path), audit_id=audit_id)
+        elif artifact_type != EvidenceType.UNKNOWN:
             yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         else:
             logger.debug("Skipping UNKNOWN file: %s", evidence.path.name)
