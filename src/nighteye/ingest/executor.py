@@ -233,9 +233,18 @@ def _stream_directory(
             EvidenceType.SHIMCACHE,
             EvidenceType.SRUM,
         ):
-            yield from _ez_tool_to_docs(
-                detected.evidence_type, item, host_name, file_audit_id
-            )
+            if is_tool_available(detected.evidence_type):
+                yield from _ez_tool_to_docs(
+                    detected.evidence_type, item, host_name, file_audit_id
+                )
+            elif detected.evidence_type == EvidenceType.REGISTRY_HIVE:
+                from nighteye.ingest.python_registry import parse_registry_hive
+                yield from parse_registry_hive(
+                    item, host_name=host_name,
+                    source_file=str(item), audit_id=file_audit_id,
+                )
+            else:
+                yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
             continue
 
         # Other recognized but unparseable-here types (LNK, JUMPLIST,
@@ -411,7 +420,7 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
             yield from _run_memory_pipeline(evidence.path, host_name, case_id)
             continue
 
-        # 3. EZ Tools Parsing — for the artifact types we have parsers for.
+        # 3. EZ Tools / Python parser fallback
         if artifact_type in (
             EvidenceType.REGISTRY_HIVE,
             EvidenceType.MFT,
@@ -420,9 +429,20 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
             EvidenceType.SHIMCACHE,
             EvidenceType.SRUM,
         ):
-            yield from _ez_tool_to_docs(
-                artifact_type, evidence.path, host_name, audit_id
-            )
+            # Try EZ Tools first, fall back to Python parser
+            if is_tool_available(artifact_type):
+                yield from _ez_tool_to_docs(
+                    artifact_type, evidence.path, host_name, audit_id
+                )
+            elif artifact_type == EvidenceType.REGISTRY_HIVE:
+                from nighteye.ingest.python_registry import parse_registry_hive
+                yield from parse_registry_hive(
+                    evidence.path, host_name=host_name,
+                    source_file=str(evidence.path), audit_id=audit_id,
+                )
+            else:
+                # No parser available — metadata doc for provenance
+                yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
             continue
 
         # 4. Recognized but no parser yet (LNK, JUMPLIST, WIN_TIMELINE,

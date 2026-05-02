@@ -42,6 +42,11 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+parsers = [
+    "evtx>=0.8",              # pure-Python EVTX parser
+    "python-registry>=1.4",   # pure-Python Windows registry hive parser
+    "pylnk3>=0.4",            # pure-Python LNK parser
+]
 
 [project.scripts]
 nighteye = "nighteye.cli:main"
