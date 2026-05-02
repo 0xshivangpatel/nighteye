@@ -176,26 +176,37 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
     (e.g. HDD) so the VM disk is not consumed. Falls back to the case
     extractions dir only if the source drive is read-only.
 
-    Idempotency: re-running skips already-extracted archives; existing
-    extracted dirs are always returned even if source archives are gone.
+    Smart resolution: if the zip is gone but the extracted directory
+    remains, the extracted dir is still returned. If both exist, the
+    zip is skipped (already extracted). Always prefers already-extracted
+    content over re-extraction.
     """
     target_dir = Path(target_dir)
     extracted: dict[Path, None] = {}
 
-    # Seed with previously-extracted dirs on the HDD (look next to archives)
-    for marker_dir in target_dir.rglob(f"*_{_MARKER_FILENAME}") if target_dir.is_dir() else []:
-        parent = marker_dir.parent
-        if parent.is_dir() and _has_any_content(parent):
-            extracted[parent.resolve()] = None
+    # ---- Phase 1: discover already-extracted directories ----
+    # Look for *_nighteye directories that contain real content.
+    # These are the extraction targets (created alongside zips on HDD).
+    if target_dir.is_dir():
+        scan_fn = target_dir.rglob if recursive else target_dir.glob
+        for d in scan_fn("*_nighteye"):
+            if d.is_dir() and _has_any_content(d):
+                extracted[d.resolve()] = None
 
-    # Also seed from case extractions dir
+        # Also discover via marker dotfiles (`.nighteye_extracted` inside dirs)
+        for marker in scan_fn(_MARKER_FILENAME):
+            parent = marker.parent
+            if parent.is_dir() and _has_any_content(parent):
+                extracted[parent.resolve()] = None
+
+    # Also seed from case extractions dir as fallback
     extractions_dir = _resolve_extractions_dir()
     if extractions_dir and extractions_dir.is_dir():
         for child in sorted(extractions_dir.iterdir()):
             if child.is_dir() and (_has_marker(child) or _has_any_content(child)):
                 extracted[child.resolve()] = None
 
-    # Collect archives to try extracting
+    # ---- Phase 2: find archives and extract anything missing ----
     targets: list[Path] = []
     if target_dir.is_file():
         if _is_archive(target_dir) or _is_image(target_dir):
@@ -223,23 +234,27 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
         out_dir = _output_dir_for(source)
 
         if _has_marker(out_dir) or _has_any_content(out_dir):
-            logger.info("Skipping already-extracted %s (existing dir: %s)", source.name, out_dir.name)
+            logger.info("Skipping already-extracted %s → %s", source.name, out_dir.name)
             extracted[out_dir.resolve()] = None
             continue
 
         if _is_archive(source):
-            logger.info("Extracting archive %s -> %s", source.name, out_dir)
+            logger.info("Extracting archive %s → %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
         elif _is_image(source):
-            logger.info("Extracting image %s -> %s", source.name, out_dir)
+            logger.info("Extracting image %s → %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
             else:
                 logger.warning(
-                    "7zip could not extract image %s. For deep E01 support "
-                    "use ewfmount + tsk_recover manually and place output in %s.",
-                    source.name, out_dir,
+                    "7zip could not extract %s. For deep E01 support "
+                    "use ewfmount + tsk_recover manually.", source.name
                 )
+
+    if not extracted:
+        logger.warning("No evidence archives or extracted directories found in %s", target_dir)
+    else:
+        logger.info("Evidence roots: %d extracted directories available", len(extracted))
 
     return sorted(extracted.keys())
