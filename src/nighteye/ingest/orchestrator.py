@@ -403,8 +403,12 @@ def ingest_evidence(
 
     # Always include the case's extractions directory if it contains evidence from a
     # previous run — the user may have deleted zip files after first ingest.
-    extractions_dir = (Path(get_case_dir(case_id) if get_case_dir() else Path(".")) / "extractions").resolve()
-    if extractions_dir.exists() and extractions_dir not in roots:
+    try:
+        case_dir = get_case_dir(case_id)
+    except Exception:
+        case_dir = None
+    extractions_dir = (Path(case_dir) / "extractions").resolve() if case_dir else None
+    if extractions_dir and extractions_dir.exists() and extractions_dir not in roots:
         has_content = any(extractions_dir.iterdir())
         if has_content:
             roots.append(extractions_dir)
