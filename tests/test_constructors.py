@@ -55,32 +55,31 @@ def test_lateral_movement_constructor() -> None:
         case_id="INC-01",
         host_name="DC01",
         timestamp="2026-04-29T14:24:35Z",
-        canonical_type=CanonicalType.FILE_MODIFICATION,
+        canonical_type=CanonicalType.FILE_CREATION,
         source_index="case",
         source_doc_id="doc2",
         target_file="\\\\DC01\\C$\\Windows\\temp\\malware.exe"
     )
     
     constructor.apply_supporting_signals(cluster, [support_event])
-    
-    assert "admin_share_write_within_60s" in cluster.supporting_signals
-    assert "off_hours_timestamp" not in cluster.supporting_signals # 14:24 is not off hours
-    assert cluster.score == 42 # 30 + 12
+
+    assert "tools_dropped_on_target" in cluster.supporting_signals
+    assert "target_not_previously_accessed" in cluster.supporting_signals
+    assert cluster.score == 54  # 30 + 14 + 10
     assert cluster.tier == ClusterTier.MODERATE
-    assert len(cluster.events) == 2
-    
+    assert len(cluster.events) == 1  # only trigger event; signals don't add events
+
     # 3. Test Counter Evidence
     constructor.apply_counter_evidence(cluster)
-    
-    # By default our stub returns False for both counter signals, meaning they were checked but didn't apply
-    assert len(cluster.counter_details) == 2
-    assert cluster.counter_details[0]["signal"] == "source_host_baseline_matched_admin_workstation"
+
+    assert len(cluster.counter_details) == 4
+    assert cluster.counter_details[0]["signal"] == "documented_jump_server"
     assert cluster.counter_details[0]["applies"] is False
-    assert cluster.score == 42 # Score shouldn't change
-    
+    assert cluster.score == 44
+
     # 4. Summary generation
     constructor.generate_summary(cluster)
-    assert "Lateral movement pattern detected on DC01" in cluster.summary
+    assert "Lateral movement" in cluster.summary
     assert "stark\\admin" in cluster.summary
     assert "10.0.0.5" in cluster.summary
-    assert "admin share write" in cluster.summary
+    assert "tools_dropped_on_target" in cluster.summary

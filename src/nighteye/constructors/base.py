@@ -294,7 +294,7 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
         "anti_forensic": 0,
     }
 
-    constructors = [C() for C in ALL_CONSTRUCTORS]
+    constructors = [C(db_client=db_path) for C in ALL_CONSTRUCTORS]
     stats["constructors_run"] = len(constructors)
 
     # Per-(constructor, host, bucket) cluster accumulator.

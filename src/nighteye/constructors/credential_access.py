@@ -41,7 +41,10 @@ def _is_sam_hive_copy(event: CanonicalEvent) -> bool:
     if event.canonical_type == CanonicalType.FILE_CREATION:
         path = event.target_file.lower()
         hive_names = ["sam", "system", "security", "software"]
-        return any(hive in path for hive in hive_names) and "config" in path
+        return any(hive in path for hive in hive_names) and ("config" in path or ".save" in path or ".hive" in path)
+    if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
+        cmd = event.command_line.lower()
+        return any(kw in cmd for kw in ["reg save", "sam", "security", "ntds.dit"])
     if event.canonical_type == CanonicalType.ALERT:
         name = event.alert_name.lower()
         return "sam hive" in name or "registry hive" in name

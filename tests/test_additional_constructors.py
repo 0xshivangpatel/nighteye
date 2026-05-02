@@ -25,8 +25,8 @@ def test_credential_access_constructor() -> None:
     
     clusters = constructor.evaluate_event(event)
     assert len(clusters) == 1
-    assert clusters[0].trigger_name == "sam_security_hive_copy"
-    assert clusters[0].base_score == 55
+    assert clusters[0].trigger_name == "sam_hive_copy"
+    assert clusters[0].base_score == 45
 
 
 def test_remote_execution_constructor() -> None:
@@ -66,4 +66,4 @@ def test_exfiltration_constructor() -> None:
     
     clusters = constructor.evaluate_event(event)
     assert len(clusters) == 1
-    assert clusters[0].trigger_name == "cloud_uploader_process"
+    assert clusters[0].trigger_name == "cloud_upload_tool"

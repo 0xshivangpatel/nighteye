@@ -22,6 +22,14 @@ __all__ = ["LateralMovementConstructor"]
 # Trigger Evaluators
 # ============================================================
 
+def _is_network_logon_type3(event: CanonicalEvent) -> bool:
+    """Detect Network Logon (Type 3) from internal IP."""
+    if event.canonical_type == CanonicalType.AUTHENTICATION:
+        logon_type = event.raw_data.get("winlog", {}).get("event_data", {}).get("LogonType", "")
+        if str(logon_type) == "3":
+            return True
+    return False
+
 def _is_rdp_logon(event: CanonicalEvent) -> bool:
     """Detect RDP logon events."""
     if event.canonical_type == CanonicalType.AUTHENTICATION:
@@ -255,6 +263,7 @@ class LateralMovementConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
+            TriggerRule("network_logon_type3_from_internal", 30, _is_network_logon_type3),
             TriggerRule("rdp_logon", 45, _is_rdp_logon),
             TriggerRule("smb_admin_share_write", 50, _is_smb_admin_share_write),
             TriggerRule("wmi_remote_execution", 45, _is_wmi_remote),
@@ -289,4 +298,11 @@ class LateralMovementConstructor(Constructor):
         host = cluster.trigger_event.host_name
         trigger = cluster.trigger_name
         user = cluster.trigger_event.user or "unknown"
-        cluster.summary = f"Lateral movement detected on {host} by {user}: {trigger}. Possible host-to-host propagation."
+        remote_ip = cluster.trigger_event.remote_ip or "unknown"
+        signals = ", ".join(cluster.supporting_signals) if cluster.supporting_signals else "none"
+        cluster.summary = (
+            f"Lateral movement detected on {host} by {user} "
+            f"from {remote_ip}: {trigger}. "
+            f"Supporting signals: {signals}. "
+            f"Possible host-to-host propagation."
+        )

@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
@@ -100,19 +101,18 @@ def run_1768(
     """
     exe = shutil.which("1768.py") or shutil.which("1768")
     if not exe:
-        # Check if Python is running a local 1768.py script
         if Path("/opt/1768/1768.py").exists():
-            exe = "python3 /opt/1768/1768.py"
+            exe = "/opt/1768/1768.py"
         else:
             logger.warning("1768.py not found. Skipping CS beacon parsing.")
             return
 
-    cmd = f"{exe} -j {evidence_path}"
-    
     logger.info("Running 1768.py on %s...", evidence_path.name)
     try:
-        # We need shell=True if exe is a command string with spaces
-        result = subprocess.run(cmd.split() if not " " in exe else cmd, shell=True if " " in exe else False, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(
+            [sys.executable, exe, "-j", str(evidence_path)] if exe.endswith(".py") else [exe, "-j", str(evidence_path)],
+            capture_output=True, text=True, timeout=120,
+        )
         
         if not result.stdout.strip():
             return

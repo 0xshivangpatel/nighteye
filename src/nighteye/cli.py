@@ -25,7 +25,6 @@ from nighteye.canonical.engine import run_normalization_pass
 from nighteye.graph.graph import build_graph_from_canonical
 from nighteye.constructors.base import run_all_constructors
 from nighteye.hypothesis_lifecycle import list_hypotheses
-from nighteye.mcp.tools.report_tools import generate_report
 
 __all__ = ["main"]
 
@@ -189,6 +188,8 @@ def cmd_cluster(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Generate investigation report."""
+    from nighteye.mcp.tools.report_tools import generate_report
+
     case = get_active_case()
     if not case:
         print("No active case.")
@@ -328,6 +329,67 @@ def cmd_entities(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Start the MCP server (port 4509) and the Portal (port 4510).
+
+    Runs both as concurrent uvicorn servers within a single asyncio
+    event loop. Ctrl+C stops both cleanly.
+    """
+    import asyncio
+
+    import uvicorn
+
+    from nighteye.mcp.server import create_mcp_server
+    from nighteye.portal.app import create_portal_app
+
+    mcp_host = args.mcp_host
+    mcp_port = args.mcp_port
+    portal_host = args.portal_host
+    portal_port = args.portal_port
+
+    print("=" * 60)
+    print("NIGHTEYE — Starting MCP server + Portal")
+    print("=" * 60)
+    print(f"  MCP server: http://{mcp_host}:{mcp_port}/mcp/")
+    print(f"  Portal:     http://{portal_host}:{portal_port}/")
+    case = get_active_case()
+    if case:
+        print(f"  Active case: {case.id} ({case.case_name})")
+    else:
+        print("  Active case: <none — run `nighteye init` first>")
+    print("=" * 60)
+
+    mcp = create_mcp_server()
+    if hasattr(mcp, "http_app"):
+        mcp_asgi = mcp.http_app()
+    else:
+        mcp_asgi = getattr(mcp, "app", None)
+    if mcp_asgi is None:
+        print("FATAL: cannot resolve MCP ASGI app", file=sys.stderr)
+        return 1
+
+    portal_asgi = create_portal_app()
+
+    mcp_config = uvicorn.Config(
+        mcp_asgi, host=mcp_host, port=mcp_port, log_level="info", lifespan="on"
+    )
+    portal_config = uvicorn.Config(
+        portal_asgi, host=portal_host, port=portal_port, log_level="info"
+    )
+
+    mcp_server = uvicorn.Server(mcp_config)
+    portal_server = uvicorn.Server(portal_config)
+
+    async def runner() -> None:
+        await asyncio.gather(mcp_server.serve(), portal_server.serve())
+
+    try:
+        asyncio.run(runner())
+    except KeyboardInterrupt:
+        print("\nShutdown requested.")
+    return 0
+
+
 def cmd_full_pipeline(args: argparse.Namespace) -> int:
     """Run full pipeline: ingest → normalize → graph → cluster."""
     case = get_active_case()
@@ -454,6 +516,30 @@ def main(argv: list[str] | None = None) -> int:
     pipeline_parser = subparsers.add_parser("full-pipeline", help="Run complete pipeline")
     pipeline_parser.add_argument("directory", help="Evidence directory")
     pipeline_parser.set_defaults(func=cmd_full_pipeline)
+
+    # serve
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start MCP server (port 4509) and Portal (port 4510)",
+    )
+    serve_parser.add_argument(
+        "--mcp-host", default="127.0.0.1", help="MCP server bind host (default: 127.0.0.1)"
+    )
+    serve_parser.add_argument(
+        "--mcp-port", type=int, default=4509, help="MCP server port (default: 4509)"
+    )
+    serve_parser.add_argument(
+        "--portal-host",
+        default="127.0.0.1",
+        help="Portal bind host (default: 127.0.0.1)",
+    )
+    serve_parser.add_argument(
+        "--portal-port",
+        type=int,
+        default=4510,
+        help="Portal port (default: 4510)",
+    )
+    serve_parser.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

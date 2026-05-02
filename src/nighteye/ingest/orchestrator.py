@@ -397,8 +397,17 @@ def ingest_evidence(
     evidence_path = Path(evidence_dir)
 
     # 1. Extract archives (always recursive for internal safety)
+    evidence_path = Path(evidence_dir)
     extractions = extract_archives(evidence_path, recursive=True)
     roots = [evidence_path] + extractions
+
+    # Always include the case's extractions directory if it contains evidence from a
+    # previous run — the user may have deleted zip files after first ingest.
+    extractions_dir = (Path(get_case_dir(case_id) if get_case_dir() else Path(".")) / "extractions").resolve()
+    if extractions_dir.exists() and extractions_dir not in roots:
+        has_content = any(extractions_dir.iterdir())
+        if has_content:
+            roots.append(extractions_dir)
 
     # 2. Build plan
     plan = build_ingest_plan(
@@ -412,17 +421,17 @@ def ingest_evidence(
         plan.groups = [g for g in plan.groups if g.artifact_type.value == tool_filter]
 
     # 4. Execute plan
+    from nighteye.ingest.opensearch_client import NightEyeOSClient
+
+    client = NightEyeOSClient()
+    result = execute_ingest_plan(plan, client)
+
     stats = {
-        "files_processed": 0,
-        "documents_indexed": 0,
-        "errors": 0,
+        "files_processed": len(plan.groups),
+        "documents_indexed": result.total_docs_indexed,
+        "errors": result.total_errors,
         "hosts_detected": sorted(list(set(g.host for g in plan.groups))),
     }
-
-    for result in execute_ingest_plan(plan):
-        stats["files_processed"] += result.files_processed
-        stats["documents_indexed"] += result.docs_indexed
-        stats["errors"] += result.errors
 
     return stats
 

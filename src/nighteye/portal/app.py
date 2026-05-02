@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -87,7 +88,7 @@ def create_portal_app(
             with _get_db() as conn:
                 # Get case summary
                 case_row = conn.execute(
-                    "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+                    "SELECT * FROM case_capabilities WHERE case_id = ?", (case_id,)
                 ).fetchone()
 
                 # Get counts
@@ -131,6 +132,14 @@ def create_portal_app(
                     """,
                     (case_id,),
                 ).fetchall()
+        except sqlite3.OperationalError as exc:
+            logger.warning("Database schema error in dashboard: %s", exc)
+            case_row = None
+            clusters = hypotheses = approved = entities = disturbances = 0
+            top_clusters = []
+            recent_hypotheses = []
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.warning("Failed to load dashboard data: %s", exc)
             case_row = None
@@ -169,6 +178,9 @@ def create_portal_app(
                     (case_id,),
                 ).fetchall()
                 clusters = [dict(r) for r in rows]
+        except sqlite3.OperationalError as exc:
+            logger.error("Database schema error loading clusters: %s", exc)
+            clusters = []
         except Exception as exc:
             logger.warning("Failed to load clusters: %s", exc)
             clusters = []
@@ -245,6 +257,9 @@ def create_portal_app(
                         except (json.JSONDecodeError, TypeError):
                             h["technique_ids"] = []
                     hypotheses.append(h)
+        except sqlite3.OperationalError as exc:
+            logger.error("Database schema error loading hypotheses: %s", exc)
+            hypotheses = []
         except Exception as exc:
             logger.warning("Failed to load hypotheses: %s", exc)
             hypotheses = []
@@ -383,9 +398,10 @@ def create_portal_app(
                 mermaid_lines = ["flowchart LR"]
                 # Add nodes
                 for node in nodes:
-                    # Escape characters for Mermaid
-                    label = node["canonical_key"].replace('"', "'")
-                    mermaid_lines.append(f'    {node["entity_id"]}["{node["entity_type"]}: {label}"]')
+                    # Escape characters for Mermaid syntax safety
+                    label = node["canonical_key"].replace('"', "'").replace("]", "&#93;").replace("[", "&#91;")
+                    safe_id = node["entity_id"].replace('"', "'")
+                    mermaid_lines.append(f'    {safe_id}["{node["entity_type"]}: {label}"]')
                 
                 # Add edges
                 for link in links:
@@ -466,7 +482,7 @@ def create_portal_app(
         try:
             with _get_db() as conn:
                 case_row = conn.execute(
-                    "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+                    "SELECT * FROM case_capabilities WHERE case_id = ?", (case_id,)
                 ).fetchone()
 
                 if not case_row:
@@ -513,17 +529,17 @@ def create_portal_app(
             case_id = _get_case_id()
             with _get_db() as conn:
                 sql = """
-                    SELECT cluster_id, constructor_name, host, score, strength, 
-                           status, trigger_name, summary, created_at
+                    SELECT cluster_id, cluster_type as constructor_name, primary_host as host, 
+                           score, strength, mitre_tactic as status, triggers_fired, summary, created_at
                     FROM clusters WHERE case_id = ? AND score >= ?
                 """
                 params = [case_id, min_score]
 
                 if constructor:
-                    sql += " AND constructor_name = ?"
+                    sql += " AND cluster_type = ?"
                     params.append(constructor)
                 if host:
-                    sql += " AND host = ?"
+                    sql += " AND primary_host = ?"
                     params.append(host)
 
                 sql += " ORDER BY score DESC LIMIT ?"
@@ -801,7 +817,7 @@ def main() -> None:
     import uvicorn
 
     app = create_portal_app()
-    uvicorn.run(app, host="0.0.0.0", port=4510)
+    uvicorn.run(app, host="127.0.0.1", port=4510)
 
 
 if __name__ == "__main__":

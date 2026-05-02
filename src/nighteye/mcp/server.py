@@ -650,13 +650,50 @@ def create_mcp_server() -> FastMCP:
         """
         return validate_case_readiness_impl(case_id)
 
-    # FastMCP exposes registered tools via the public iterator; fall back
-    # to private attribute only if the public attribute is absent.
-    try:
-        tool_count = len(list(mcp.list_tools()))  # type: ignore[attr-defined]
-    except Exception:
-        tool_count = len(getattr(mcp, "_tools", {}))
-    logger.info("MCP server created with %d tools", tool_count)
+    # Tool registration count: best-effort log. FastMCP 3.x exposes
+    # `list_tools()` as an async coroutine; older versions had `_tools`.
+    # We try sync paths first, then fall back to running the coroutine
+    # in a fresh event loop (safe at module-init time).
+    tool_count: int | str = "unknown"
+    for attr in ("_tools", "tools"):
+        candidate = getattr(mcp, attr, None)
+        if isinstance(candidate, dict):
+            tool_count = len(candidate)
+            break
+    if tool_count == "unknown":
+        for mgr_attr in ("_tool_manager", "tool_manager"):
+            mgr = getattr(mcp, mgr_attr, None)
+            if mgr is None:
+                continue
+            for sub_attr in ("_tools", "tools"):
+                candidate = getattr(mgr, sub_attr, None)
+                if isinstance(candidate, dict):
+                    tool_count = len(candidate)
+                    break
+            if tool_count != "unknown":
+                break
+    if tool_count == "unknown":
+        try:
+            import asyncio
+            import inspect
+
+            list_fn = getattr(mcp, "list_tools", None)
+            if callable(list_fn):
+                result = list_fn()
+                if inspect.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # Already inside an event loop — skip.
+                            result.close()
+                            raise RuntimeError("inside event loop")
+                    except RuntimeError:
+                        result = asyncio.run(list_fn())
+                if hasattr(result, "__len__"):
+                    tool_count = len(result)
+        except Exception:
+            pass
+    logger.info("MCP server created with %s tools", tool_count)
     return mcp
 
 
@@ -664,13 +701,29 @@ def create_mcp_server() -> FastMCP:
 # Entry Point
 # ============================================================
 
-def main() -> None:
-    """Run the MCP server."""
+def main(host: str = "127.0.0.1", port: int = 4509) -> None:
+    """Run the MCP server (Streamable HTTP transport).
+
+    FastMCP 3.x exposes `run(transport="http", host=..., port=...)` as
+    the recommended entry point. We use that when available; otherwise
+    we mount the ASGI app via `http_app()` under uvicorn.
+    """
+    mcp = create_mcp_server()
+    if hasattr(mcp, "run") and callable(mcp.run):
+        mcp.run(transport="http", host=host, port=port)
+        return
+    # Fallback for older FastMCP versions
     import uvicorn
 
-    mcp = create_mcp_server()
-    # FastMCP with streamable HTTP transport
-    uvicorn.run(mcp.app, host="0.0.0.0", port=4509)
+    asgi_app = (
+        mcp.http_app() if hasattr(mcp, "http_app") else getattr(mcp, "app", None)
+    )
+    if asgi_app is None:
+        raise RuntimeError(
+            "Cannot determine FastMCP ASGI app. Update FastMCP or set "
+            "transport explicitly."
+        )
+    uvicorn.run(asgi_app, host=host, port=port)
 
 
 if __name__ == "__main__":

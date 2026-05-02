@@ -34,9 +34,14 @@ def _is_large_outbound_transfer(event: CanonicalEvent) -> bool:
 def _is_cloud_upload_tool(event: CanonicalEvent) -> bool:
     """Detect cloud upload tools (rclone, MEGASync, etc.)."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
+        cmd = (event.command_line or "").lower()
+        proc = (event.process_name or "").lower()
         cloud_tools = ["rclone", "megasync", "dropbox", "google drive", "onedrive", "aws s3", "gsutil"]
-        return any(tool in cmd for tool in cloud_tools)
+        if any(tool in cmd for tool in cloud_tools):
+            return True
+        if any(tool in proc for tool in cloud_tools):
+            return True
+        return False
     if event.canonical_type == CanonicalType.ALERT:
         name = event.alert_name.lower()
         return any(tool in name for tool in ["rclone", "megasync", "cloud upload"])

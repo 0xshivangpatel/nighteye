@@ -45,8 +45,16 @@ _EVENT_ID_TO_CANONICAL: dict[str, CanonicalType] = {
     "4648": CanonicalType.AUTHENTICATION,
     "4672": CanonicalType.AUTHENTICATION,
 
+    # LSASS / Credential Access
+    "4663": CanonicalType.LSASS_ACCESS,  # Object access — detect LSASS targeting via context
+    "4656": CanonicalType.LSASS_ACCESS,  # Handle requested to LSASS
+    "4769": CanonicalType.TICKET_REQUEST,  # Kerberos TGS request
+    "4934": CanonicalType.REPLICATION,  # AD replication
+    "4935": CanonicalType.REPLICATION,  # AD replication failure
+    "1102": CanonicalType.LOG_CLEARED,  # Security log cleared
+    "104": CanonicalType.LOG_CLEARED,  # Event log cleared
+
     # File operations
-    "4663": CanonicalType.FILE_CREATION,  # Object access (simplified)
     "11": CanonicalType.FILE_CREATION,  # Sysmon file create
     "23": CanonicalType.FILE_DELETION,  # Sysmon file delete
 
@@ -80,10 +88,12 @@ _ACTION_TO_CANONICAL: dict[str, CanonicalType] = {
     "scheduled-task-created": CanonicalType.SCHEDULED_TASK,
     "network-connection-allowed": CanonicalType.NETWORK_CONNECTION,
     "network-connection-blocked": CanonicalType.NETWORK_CONNECTION,
-    "object-access-attempt": CanonicalType.FILE_CREATION,
+    "object-access-attempt": CanonicalType.LSASS_ACCESS,
     "object-deleted": CanonicalType.FILE_DELETION,
     "registry-key-modified": CanonicalType.REGISTRY_MODIFICATION,
     "script-block-logged": CanonicalType.PROCESS_EXECUTION,
+    "log-cleared": CanonicalType.LOG_CLEARED,
+    "kerberos-tgs-request": CanonicalType.TICKET_REQUEST,
     "sigma-alert": CanonicalType.ALERT,
 }
 
@@ -373,13 +383,33 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
 
     logger.info("Normalizing %d raw indices for case %s", len(raw_indices), case_id)
 
-    canonical_docs_by_host: dict[str, list[dict]] = {}
+    # Per-host batch accumulator for streaming bulk_index.
+    # Flush when a host batch reaches BATCH_SIZE to keep memory bounded.
+    BATCH_SIZE = 5000
+    canonical_batches: dict[str, list[dict]] = {}
+
+    def _flush_host(host: str, docs: list[dict]) -> None:
+        if not docs:
+            return
+        canonical_index = make_index_name(case_id, "canonical", host)
+        doc_ids = [
+            compute_doc_id(
+                case_id, "canonical", host,
+                f"{d.get('canonical_type')}:{d.get('@timestamp')}:{d.get('event_id')}"
+            )
+            for d in docs
+        ]
+        try:
+            client.bulk_index(canonical_index, docs, doc_ids=doc_ids)
+            logger.debug("Indexed %d canonical events to %s", len(docs), canonical_index)
+        except Exception as exc:
+            logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
+            normalizer.stats["errors"] += len(docs)
 
     for index_name in raw_indices:
         logger.debug("Normalizing index: %s", index_name)
 
         try:
-            # Scroll through all docs in index
             for page in client.scroll_search_iter(
                 index=index_name,
                 query={"match_all": {}},
@@ -389,33 +419,23 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
                     canonical_event = normalizer.normalize(doc)
                     if canonical_event:
                         host = canonical_event.host_name
-                        if host not in canonical_docs_by_host:
-                            canonical_docs_by_host[host] = []
-                        canonical_docs_by_host[host].append(canonical_event.to_dict())
+                        if host not in canonical_batches:
+                            canonical_batches[host] = []
+                        canonical_batches[host].append(canonical_event.to_dict())
+
+                # Flush any batch that exceeds BATCH_SIZE after each scroll page.
+                for host, docs in list(canonical_batches.items()):
+                    if len(docs) >= BATCH_SIZE:
+                        _flush_host(host, docs)
+                        canonical_batches[host] = []
 
         except Exception as exc:
             logger.warning("Failed to normalize index %s: %s", index_name, exc)
             normalizer.stats["errors"] += 1
 
-    # Index canonical documents
-    for host, docs in canonical_docs_by_host.items():
-        canonical_index = make_index_name(case_id, "canonical", host)
-
-        # Generate deterministic doc IDs
-        doc_ids = [
-            compute_doc_id(
-                case_id, "canonical", host,
-                f"{d.get('canonical_type')}:{d.get('@timestamp')}:{d.get('event_id')}"
-            )
-            for d in docs
-        ]
-
-        try:
-            client.bulk_index(canonical_index, docs, doc_ids=doc_ids)
-            logger.info("Indexed %d canonical events to %s", len(docs), canonical_index)
-        except Exception as exc:
-            logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
-            normalizer.stats["errors"] += len(docs)
+    # Flush all remaining batches.
+    for host, docs in canonical_batches.items():
+        _flush_host(host, docs)
 
     logger.info(
         "Normalization complete: %d scanned, %d created, %d errors, %d skipped",

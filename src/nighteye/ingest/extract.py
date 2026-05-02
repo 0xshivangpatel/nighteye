@@ -1,112 +1,255 @@
 """Automatic Archive & Image Extractor.
 
-Handles pre-processing of raw evidence containers (ZIP, 7z, RAR, E01)
-before the ingest plan is built. Extracted contents are placed in the
-case's `extractions/` directory.
+Pre-processes raw evidence containers (ZIP, 7z, RAR, E01, ...) into
+``case/extractions/<archive_stem>/`` directories that downstream parsers
+can scan. Designed to be **idempotent**: running ingest a second time
+after the original archives have been deleted or moved still surfaces
+the previously-extracted contents.
+
+Two responsibilities:
+  1. Extract any new archives discovered in the target_dir.
+  2. Always return every directory under ``case/extractions/`` that
+     looks like extracted evidence, regardless of whether the source
+     archive is still on disk.
+
+A non-empty extracted dir is identified by either having any subfile or
+by carrying a ``.nighteye_extracted`` marker file written at the time of
+extraction (so we can distinguish a partial/aborted extraction).
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
-from nighteye.case import get_case_dir
+
+from nighteye.case import get_active_case_dir, get_case_dir
 
 logger = logging.getLogger("nighteye.ingest.extract")
 
+ARCHIVE_EXTS: frozenset[str] = frozenset({
+    ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".tar.gz", ".tar.bz2",
+})
+IMAGE_EXTS: frozenset[str] = frozenset({
+    ".e01", ".raw", ".dd", ".img", ".vmdk", ".vhd", ".vhdx",
+})
+
+# Marker placed at the root of every successful extraction. Re-runs use
+# this to prove an extraction completed, distinguishing it from a
+# partial/aborted one.
+_MARKER_FILENAME = ".nighteye_extracted"
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+
+def _resolve_extractions_dir() -> Path | None:
+    """Return the case extractions/ directory, or None if no case is active."""
+    case_dir = get_active_case_dir()
+    if case_dir is None:
+        try:
+            case_dir = get_case_dir()
+        except Exception:
+            return None
+    if case_dir is None:
+        return None
+    extractions = Path(case_dir) / "extractions"
+    extractions.mkdir(parents=True, exist_ok=True)
+    return extractions
+
+
+def _is_archive(path: Path) -> bool:
+    """Whether the file is a known archive."""
+    if not path.is_file():
+        return False
+    name = path.name.lower()
+    if name.endswith(".tar.gz") or name.endswith(".tar.bz2"):
+        return True
+    return path.suffix.lower() in ARCHIVE_EXTS
+
+
+def _is_image(path: Path) -> bool:
+    """Whether the file is a forensic image."""
+    if not path.is_file():
+        return False
+    return path.suffix.lower() in IMAGE_EXTS
+
+
+def _has_marker(out_dir: Path) -> bool:
+    return (out_dir / _MARKER_FILENAME).exists()
+
+
+def _write_marker(out_dir: Path, source: Path) -> None:
+    try:
+        (out_dir / _MARKER_FILENAME).write_text(
+            f"source: {source.name}\n", encoding="utf-8"
+        )
+    except OSError:
+        # Marker is best-effort; don't fail the extraction over it.
+        pass
+
+
+def _has_any_content(out_dir: Path) -> bool:
+    """A directory counts as 'extracted' if it contains any non-marker file."""
+    if not out_dir.is_dir():
+        return False
+    for child in out_dir.iterdir():
+        if child.name == _MARKER_FILENAME:
+            continue
+        return True
+    return False
+
+
+def _existing_extractions(extractions_dir: Path) -> list[Path]:
+    """List every subdir in extractions/ that holds previously-extracted data."""
+    out: list[Path] = []
+    if not extractions_dir.is_dir():
+        return out
+    for child in sorted(extractions_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if _has_marker(child) or _has_any_content(child):
+            out.append(child)
+    return out
+
+
+def _have_7z() -> bool:
+    return shutil.which("7z") is not None or shutil.which("7zz") is not None
+
+
+def _seven_zip_binary() -> str:
+    return shutil.which("7z") or shutil.which("7zz") or "7z"
+
+
+def _extract_one(source: Path, out_dir: Path) -> bool:
+    """Run 7zip on `source` into `out_dir`. Returns True on success."""
+    if not _have_7z():
+        logger.error(
+            "7zip is not installed; cannot extract %s. Install p7zip-full "
+            "(Linux) or 7-Zip (Windows) and retry.",
+            source.name,
+        )
+        return False
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [_seven_zip_binary(), "x", str(source), f"-o{out_dir}", "-y"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.error("7zip failed to extract %s: %s", source.name, exc)
+        return False
+    _write_marker(out_dir, source)
+    return True
+
+
+# ============================================================
+# Public API
+# ============================================================
+
+
 def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
-    """Scan and extract all supported archives in the target directory.
-    
-    Returns a list of directories containing the extracted evidence.
+    """Scan and extract supported archives, returning all extraction dirs.
+
+    Idempotency guarantees:
+      - Re-running with the same target_dir is safe; previously-extracted
+        archives are skipped.
+      - **If the source archive has been deleted or moved**, the existing
+        extracted directory is still returned. This was the user-reported
+        bug — earlier the function returned ``[]`` early when no archives
+        were found, hiding the previously-extracted content.
+
+    Args:
+        target_dir: A file or directory to scan for archives/images.
+        recursive: Recurse into subdirectories.
+
+    Returns:
+        List of directory paths under ``case/extractions/`` containing
+        evidence for downstream parsers. Sorted, de-duplicated.
     """
-    case_dir = get_case_dir()
-    if not case_dir:
-        return []
-        
-    extractions_dir = case_dir / "extractions"
-    extractions_dir.mkdir(exist_ok=True)
-    
-    extracted_paths = []
-    
-    # Extensions we know we can handle automatically
-    archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz"}
-    image_exts = {".e01", ".raw", ".dd"}
-    
-    if target_dir.is_file():
-        targets = [target_dir] if target_dir.suffix.lower() in (archive_exts | image_exts) else []
-    else:
-        # Targeted scanning is much faster than rglob("*") on slow HDDs
-        targets = []
-        scan_fn = target_dir.rglob if recursive else target_dir.glob
-        for ext in (archive_exts | image_exts):
-            targets.extend(list(scan_fn(f"*{ext}")))
-            targets.extend(list(scan_fn(f"*{ext.upper()}")))
-    
-    if not targets:
+    extractions_dir = _resolve_extractions_dir()
+    if extractions_dir is None:
         return []
 
+    target_dir = Path(target_dir)
+    extracted: dict[Path, None] = {}
+
+    # Always seed the result with previously-extracted dirs. This is the
+    # idempotency fix.
+    for prior in _existing_extractions(extractions_dir):
+        extracted[prior.resolve()] = None
+
+    # Collect new archives/images to try extracting.
+    targets: list[Path] = []
+    if target_dir.is_file():
+        if _is_archive(target_dir) or _is_image(target_dir):
+            targets.append(target_dir)
+    elif target_dir.is_dir():
+        scan_fn = target_dir.rglob if recursive else target_dir.glob
+        for ext in (ARCHIVE_EXTS | IMAGE_EXTS):
+            for p in scan_fn(f"*{ext}"):
+                if p.is_file() and not p.is_symlink():
+                    targets.append(p)
+            for p in scan_fn(f"*{ext.upper()}"):
+                if p.is_file() and not p.is_symlink():
+                    targets.append(p)
+        # double-extension archives (.tar.gz, .tar.bz2)
+        for p in scan_fn("*.tar.gz"):
+            if p.is_file() and not p.is_symlink():
+                targets.append(p)
+
+    # Wrap in tqdm if available; fall back gracefully.
     try:
-        from tqdm import tqdm
-        target_iter = tqdm(targets, desc="Unzipping Evidence", unit="file", leave=True)
+        from tqdm import tqdm  # type: ignore
+
+        target_iter = tqdm(targets, desc="Extracting evidence", unit="file", leave=False)
     except ImportError:
         target_iter = targets
 
-    for f in target_iter:
-        ext = f.suffix.lower()
-        if ext in archive_exts:
-            out_dir = extractions_dir / f.stem
-            if out_dir.exists():
-                logger.info("Skipping already extracted archive: %s", f.name)
-                extracted_paths.append(out_dir)
-                continue
-                
-            logger.info("Extracting archive %s via 7zip...", f.name)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                subprocess.run(
-                    ["7z", "x", str(f), f"-o{out_dir}", "-y"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True
+    for source in target_iter:
+        out_dir = extractions_dir / source.stem
+        # Some tools name `archive.tar.gz` whose .stem is `archive.tar`.
+        # Use the full name (without final extension) when that happens.
+        if source.suffixes[-2:] == [".tar", ".gz"] or source.suffixes[-2:] == [
+            ".tar",
+            ".bz2",
+        ]:
+            out_dir = extractions_dir / source.name.replace(".tar.gz", "").replace(
+                ".tar.bz2", ""
+            )
+
+        if _has_marker(out_dir) or _has_any_content(out_dir):
+            logger.info(
+                "Skipping already-extracted %s (existing dir: %s)",
+                source.name,
+                out_dir.name,
+            )
+            extracted[out_dir.resolve()] = None
+            continue
+
+        if _is_archive(source):
+            logger.info("Extracting archive %s -> %s", source.name, out_dir)
+            if _extract_one(source, out_dir):
+                extracted[out_dir.resolve()] = None
+        elif _is_image(source):
+            # 7zip handles many forensic image formats. For E01 the success
+            # rate depends on the variant; fall back instructions are
+            # logged on failure.
+            logger.info("Extracting image %s -> %s", source.name, out_dir)
+            if _extract_one(source, out_dir):
+                extracted[out_dir.resolve()] = None
+            else:
+                logger.warning(
+                    "7zip could not extract image %s. For deep E01 support "
+                    "use ewfmount + tsk_recover manually and place output "
+                    "in %s.",
+                    source.name,
+                    out_dir,
                 )
-                extracted_paths.append(out_dir)
-            except subprocess.CalledProcessError as e:
-                msg = f"Failed to extract {f.name} with 7zip: {e}"
-                if 'tqdm' in globals() or 'tqdm' in locals():
-                    try:
-                        tqdm.write(msg)
-                    except:
-                        logger.error(msg)
-                else:
-                    logger.error(msg)
-                
-        elif ext in image_exts:
-            out_dir = extractions_dir / f.stem
-            if out_dir.exists():
-                logger.info("Skipping already extracted image: %s", f.name)
-                extracted_paths.append(out_dir)
-                continue
-                
-            logger.info("Attempting to extract forensic image %s via 7zip...", f.name)
-            # Modern 7zip can actually parse and extract NTFS filesystems 
-            # from RAW and some E01 variants!
-            out_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                subprocess.run(
-                    ["7z", "x", str(f), f"-o{out_dir}", "-y"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True
-                )
-                extracted_paths.append(out_dir)
-            except subprocess.CalledProcessError as e:
-                msg = f"7zip failed to extract image {f.name}: {e}. For deep E01 support, manual ewfmount + tsk_recover may be required."
-                if 'tqdm' in globals() or 'tqdm' in locals():
-                    try:
-                        tqdm.write(msg)
-                    except:
-                        logger.warning(msg)
-                else:
-                    logger.warning(msg)
-                
-    return extracted_paths
+
+    return sorted(extracted.keys())

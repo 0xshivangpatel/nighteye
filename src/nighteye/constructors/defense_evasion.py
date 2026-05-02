@@ -37,6 +37,18 @@ def _is_amsi_bypass(event: CanonicalEvent) -> bool:
         return "amsi" in name and ("bypass" in name or "tamper" in name)
     return False
 
+
+def _is_obfuscated_powershell(event: CanonicalEvent) -> bool:
+    """Detect obfuscated/encoded PowerShell commands."""
+    if event.canonical_type != CanonicalType.PROCESS_EXECUTION:
+        return False
+    proc = (event.process_name or "").lower()
+    if "powershell" not in proc:
+        return False
+    cmd = (event.command_line or "").lower()
+    obfuscation = ["-enc", "-encodedcommand", "-e ", "-enc ", "frombase64string"]
+    return any(ind in cmd for ind in obfuscation)
+
 def _is_etw_tamper(event: CanonicalEvent) -> bool:
     """Detect ETW (Event Tracing for Windows) tampering."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
@@ -200,6 +212,7 @@ class DefenseEvasionConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
+            TriggerRule("obfuscated_powershell", 40, _is_obfuscated_powershell),
             TriggerRule("amsi_bypass", 55, _is_amsi_bypass),
             TriggerRule("etw_tamper", 50, _is_etw_tamper),
             TriggerRule("edr_disable", 50, _is_edr_disable),

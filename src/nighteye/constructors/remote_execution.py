@@ -33,6 +33,20 @@ def _is_psexec_usage(event: CanonicalEvent) -> bool:
         return "psexec" in name or "remote execution" in name
     return False
 
+
+def _is_office_spawning_shell(event: CanonicalEvent) -> bool:
+    """Detect Office app spawning a shell (macro-based execution)."""
+    if event.canonical_type != CanonicalType.PROCESS_EXECUTION:
+        return False
+    parent = event.raw_data.get("process", {}).get("parent", {})
+    parent_name = (parent.get("name") or "").lower()
+    office_apps = ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe"]
+    if parent_name in office_apps:
+        shell_procs = ["cmd.exe", "powershell.exe", "wscript.exe", "cscript.exe"]
+        if (event.process_name or "").lower() in shell_procs:
+            return True
+    return False
+
 def _is_wmi_remote(event: CanonicalEvent) -> bool:
     """Detect WMI remote execution (wmic /node:)."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
@@ -166,6 +180,7 @@ class RemoteExecutionConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
+            TriggerRule("office_spawning_shell", 60, _is_office_spawning_shell),
             TriggerRule("psexec_usage", 50, _is_psexec_usage),
             TriggerRule("wmi_remote_execution", 45, _is_wmi_remote),
             TriggerRule("powershell_remoting", 45, _is_powershell_remoting),

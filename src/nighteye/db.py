@@ -88,8 +88,16 @@ def execute_with_retry(
     raise last_err
 
 
+_VALID_PRAGMAS = frozenset({
+    "journal_mode", "synchronous", "busy_timeout", "foreign_keys",
+    "wal_checkpoint", "page_size", "cache_size",
+})
+
+
 def get_pragma(conn: sqlite3.Connection, pragma: str) -> object:
-    """Return the value of a SQLite PRAGMA."""
+    """Return the value of an allow-listed SQLite PRAGMA."""
+    if pragma not in _VALID_PRAGMAS:
+        raise ValueError(f"Disallowed PRAGMA: {pragma}")
     cur = conn.execute(f"PRAGMA {pragma}")
     row = cur.fetchone()
     if row is None:

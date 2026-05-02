@@ -32,12 +32,29 @@ class EvidenceType(str, Enum):
     MEMORY_DUMP = "memory"
     REGISTRY_HIVE = "registry"
     MFT = "mft"
+    USN_JOURNAL = "usn_journal"
+    LOGFILE = "logfile"            # NTFS $LogFile
     PREFETCH = "prefetch"
     KAPE_ZIP = "kape_zip"
     PCAP = "pcap"
     AMCACHE = "amcache"
     SHIMCACHE = "shimcache"
     SRUM = "srum"
+    JUMPLIST = "jumplist"
+    LNK = "lnk"
+    SHELLBAG = "shellbag"
+    RECYCLEBIN = "recyclebin"
+    WIN_TIMELINE = "win_timeline"  # ActivitiesCache.db
+    BROWSER_HISTORY = "browser_history"
+    OUTLOOK = "outlook"            # PST / OST
+    SYSLOG = "syslog"
+    AUTH_LOG = "auth_log"
+    BASH_HISTORY = "bash_history"
+    AUDITD = "auditd"
+    IIS_LOG = "iis_log"
+    APACHE_LOG = "apache_log"
+    SCHEDULED_TASK_XML = "scheduled_task_xml"
+    SYSMON_CONFIG = "sysmon_config"
     UNKNOWN = "unknown"
 
 
@@ -49,24 +66,61 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".dmp": EvidenceType.MEMORY_DUMP,
     ".vmem": EvidenceType.MEMORY_DUMP,
     ".raw": EvidenceType.MEMORY_DUMP,
+    ".lime": EvidenceType.MEMORY_DUMP,
     ".pf": EvidenceType.PREFETCH,
     ".pcap": EvidenceType.PCAP,
     ".pcapng": EvidenceType.PCAP,
+    ".cap": EvidenceType.PCAP,
+    ".lnk": EvidenceType.LNK,
+    ".pst": EvidenceType.OUTLOOK,
+    ".ost": EvidenceType.OUTLOOK,
+    ".automaticdestinations-ms": EvidenceType.JUMPLIST,
+    ".customdestinations-ms": EvidenceType.JUMPLIST,
 }
 
 # Known registry hive filenames (no extension)
 _REGISTRY_HIVE_NAMES: frozenset[str] = frozenset({
     "sam", "security", "system", "software", "ntuser.dat",
-    "usrclass.dat", "default", "components",
+    "usrclass.dat", "default", "components", "schema.dat",
+    "drivers", "elam",
 })
 
 # Known filename patterns for specific artifact types
 _FILENAME_MAP: dict[str, EvidenceType] = {
     "$mft": EvidenceType.MFT,
+    "$j": EvidenceType.USN_JOURNAL,
+    "$usnjrnl": EvidenceType.USN_JOURNAL,
+    "$logfile": EvidenceType.LOGFILE,
     "amcache.hve": EvidenceType.AMCACHE,
     "appcompatcache": EvidenceType.SHIMCACHE,
     "srudb.dat": EvidenceType.SRUM,
+    "activitiescache.db": EvidenceType.WIN_TIMELINE,
+    "history": EvidenceType.BROWSER_HISTORY,
+    "places.sqlite": EvidenceType.BROWSER_HISTORY,
+    "webcachev01.dat": EvidenceType.BROWSER_HISTORY,
+    "auth.log": EvidenceType.AUTH_LOG,
+    "secure": EvidenceType.AUTH_LOG,
+    "syslog": EvidenceType.SYSLOG,
+    "messages": EvidenceType.SYSLOG,
+    ".bash_history": EvidenceType.BASH_HISTORY,
+    "audit.log": EvidenceType.AUDITD,
+    "shellbag": EvidenceType.SHELLBAG,
 }
+
+# Path-substring hints (case-insensitive, matched against full path)
+_PATH_SUBSTRING_HINTS: list[tuple[str, EvidenceType]] = [
+    ("$recycle.bin", EvidenceType.RECYCLEBIN),
+    ("recyclebin", EvidenceType.RECYCLEBIN),
+    ("/scheduled tasks/", EvidenceType.SCHEDULED_TASK_XML),
+    ("\\scheduled tasks\\", EvidenceType.SCHEDULED_TASK_XML),
+    ("/automaticdestinations/", EvidenceType.JUMPLIST),
+    ("\\automaticdestinations\\", EvidenceType.JUMPLIST),
+    ("/customdestinations/", EvidenceType.JUMPLIST),
+    ("/iis/logs/", EvidenceType.IIS_LOG),
+    ("\\inetpub\\logs\\", EvidenceType.IIS_LOG),
+    ("/apache2/", EvidenceType.APACHE_LOG),
+    ("/httpd/", EvidenceType.APACHE_LOG),
+]
 
 
 @dataclass
@@ -154,6 +208,26 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
         return DetectedEvidence(
             path=path,
             evidence_type=EvidenceType.REGISTRY_HIVE,
+            size_bytes=size,
+        )
+
+    # Path-substring hints (e.g. anything inside $Recycle.Bin, IIS log dirs)
+    full_path_lower = str(path).lower().replace("\\", "/")
+    for needle, etype in _PATH_SUBSTRING_HINTS:
+        if needle.replace("\\", "/") in full_path_lower:
+            return DetectedEvidence(
+                path=path,
+                evidence_type=etype,
+                size_bytes=size,
+                note=f"Matched path hint: {needle}",
+            )
+
+    # Scheduled Task XML (Windows Task Scheduler stores as XML in
+    # \Windows\System32\Tasks\). Detected by content sniff fallback.
+    if ext == ".xml" and "tasks" in full_path_lower:
+        return DetectedEvidence(
+            path=path,
+            evidence_type=EvidenceType.SCHEDULED_TASK_XML,
             size_bytes=size,
         )
 
