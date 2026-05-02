@@ -393,6 +393,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def cmd_full_pipeline(args: argparse.Namespace) -> int:
     """Run full pipeline: ingest → normalize → graph → cluster."""
+    import time as _time
+
     case = get_active_case()
     if not case:
         print("No active case.")
@@ -401,34 +403,51 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
     print("=" * 60)
     print("NIGHTEYE FULL PIPELINE")
     print("=" * 60)
+    total_start = _time.time()
 
     # Step 1: Ingest
     print("\n[1/4] Ingesting evidence...")
+    t0 = _time.time()
     ingest_stats = ingest_evidence(
         evidence_dir=args.directory,
         case_id=case.id,
         examiner=case.examiner,
     )
-    print(f"  → {ingest_stats['documents_indexed']} documents indexed")
+    t1 = _time.time()
+    print(f"  → {ingest_stats['documents_indexed']} docs indexed in {t1 - t0:.0f}s "
+          f"({ingest_stats.get('errors', 0)} errors)")
+    print(f"  → Hosts: {', '.join(ingest_stats['hosts_detected'])}")
 
     # Step 2: Normalize
     print("\n[2/4] Normalizing to canonical events...")
+    t0 = _time.time()
     client = NightEyeOSClient()
     norm_stats = run_normalization_pass(client, case.id)
-    print(f"  → {norm_stats['canonical_docs_created']} canonical events created")
+    t1 = _time.time()
+    print(f"  → {norm_stats['canonical_docs_created']} canonical events in {t1 - t0:.0f}s "
+          f"({norm_stats.get('errors', 0)} errors, {norm_stats.get('skipped', 0)} skipped)")
 
     # Step 3: Build Graph
     print("\n[3/4] Building entity-relationship graph...")
+    t0 = _time.time()
     graph_stats = build_graph_from_canonical(client, case.id, case.graph_db)
-    print(f"  → {graph_stats['entities_created']} entities, {graph_stats['edges_created']} edges")
+    t1 = _time.time()
+    print(f"  → {graph_stats['entities_created']} entities, "
+          f"{graph_stats['edges_created']} edges in {t1 - t0:.0f}s")
 
     # Step 4: Cluster
     print("\n[4/4] Running behavioral clustering...")
+    t0 = _time.time()
     cluster_stats = run_all_constructors(client, case.id, case.graph_db)
-    print(f"  → {cluster_stats['clusters_created']} clusters created")
+    t1 = _time.time()
+    print(f"  → {cluster_stats['clusters_created']} clusters "
+          f"({cluster_stats.get('high_confidence', 0)} high) in {t1 - t0:.0f}s")
+    if cluster_stats.get("anti_forensic", 0) > 0:
+        print(f"  → {cluster_stats['anti_forensic']} anti-forensic indicators detected")
 
+    total_end = _time.time()
     print("\n" + "=" * 60)
-    print("PIPELINE COMPLETE")
+    print(f"PIPELINE COMPLETE in {total_end - total_start:.0f}s")
     print("=" * 60)
     print(f"View results at: http://localhost:4510")
     return 0

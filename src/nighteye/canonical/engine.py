@@ -383,8 +383,15 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
 
     logger.info("Normalizing %d raw indices for case %s", len(raw_indices), case_id)
 
+    try:
+        from tqdm import tqdm
+        index_iter = tqdm(raw_indices, desc="Normalizing", unit="idx", dynamic_ncols=True)
+        _tqdm_avail = True
+    except ImportError:
+        index_iter = raw_indices
+        _tqdm_avail = False
+
     # Per-host batch accumulator for streaming bulk_index.
-    # Flush when a host batch reaches BATCH_SIZE to keep memory bounded.
     BATCH_SIZE = 5000
     canonical_batches: dict[str, list[dict]] = {}
 
@@ -406,8 +413,9 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
             logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
             normalizer.stats["errors"] += len(docs)
 
-    for index_name in raw_indices:
-        logger.debug("Normalizing index: %s", index_name)
+    for index_name in index_iter:
+        if _tqdm_avail:
+            index_iter.set_postfix(idx=index_name.split(f"case-{case_id}-")[-1][:30], docs=normalizer.stats["canonical_docs_created"])
 
         try:
             for page in client.scroll_search_iter(

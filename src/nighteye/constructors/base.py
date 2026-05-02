@@ -305,7 +305,13 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
 
     canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
 
-    for index_name in canonical_indices:
+    try:
+        from tqdm import tqdm
+        idx_iter = tqdm(canonical_indices, desc="Clustering", unit="idx", dynamic_ncols=True)
+    except ImportError:
+        idx_iter = canonical_indices
+
+    for index_name in idx_iter:
         logger.info("Running behavioral clustering on %s", index_name)
         try:
             for page in client.scroll_search_iter(

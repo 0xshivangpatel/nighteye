@@ -57,13 +57,29 @@ def execute_ingest_plan(
 
     try:
         from tqdm import tqdm
-        group_iter = tqdm(plan.groups, desc="Ingesting Evidence", unit="group", dynamic_ncols=True)
+
+        # Show per-group progress with host/type info
+        group_iter = tqdm(
+            plan.groups,
+            desc="Ingesting",
+            unit="group",
+            dynamic_ncols=True,
+            postfix={"host": "", "type": "", "docs": 0},
+        )
     except ImportError:
         group_iter = plan.groups
+        _tqdm_available = False
+    else:
+        _tqdm_available = True
 
     for group in group_iter:
         group_start = time.time()
         group.status = "ingesting"
+
+        if _tqdm_available:
+            group_iter.set_postfix(
+                host=group.host, type=group.artifact_type.value, docs="..."
+            )
 
         logger.info(
             "Ingesting group: %s (%s, %d files)",
@@ -78,12 +94,27 @@ def execute_ingest_plan(
 
             # Stream all files in this group into a single bulk ingest
             doc_stream = _stream_group_docs(group, plan.case_id)
-            
-            # Execute the bulk stream to OpenSearch
-            success_count, error_count = client.bulk_index_iter(
-                index_name=group.index_name,
-                documents=doc_stream,
-            )
+
+            # Wrap with a counter-based progress bar for large groups
+            if _tqdm_available:
+                doc_counter = tqdm(
+                    doc_stream,
+                    desc=f"  {group.host}/{group.artifact_type.value}",
+                    unit="docs",
+                    unit_scale=True,
+                    dynamic_ncols=True,
+                    leave=False,
+                )
+                success_count, error_count = client.bulk_index_iter(
+                    index_name=group.index_name,
+                    documents=doc_counter,
+                )
+                doc_counter.close()
+            else:
+                success_count, error_count = client.bulk_index_iter(
+                    index_name=group.index_name,
+                    documents=doc_stream,
+                )
 
             group.doc_count = success_count
             result.total_docs_indexed += success_count
@@ -95,6 +126,13 @@ def execute_ingest_plan(
             group.status = "done"
             result.groups_completed += 1
             modified_indices.add(group.index_name)
+
+            if _tqdm_available:
+                group_iter.set_postfix(
+                    host=group.host,
+                    type=f"{group.artifact_type.value} ✓",
+                    docs=success_count,
+                )
 
         except Exception as exc:
             group.status = "failed"
