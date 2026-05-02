@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from nighteye.case import get_active_case_dir, get_case_dir
@@ -32,12 +33,10 @@ ARCHIVE_EXTS: frozenset[str] = frozenset({
     ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".tar.gz", ".tar.bz2",
 })
 IMAGE_EXTS: frozenset[str] = frozenset({
-    ".e01", ".raw", ".dd", ".img", ".vmdk", ".vhd", ".vhdx",
+    ".e01", ".ex01", ".e02", ".raw", ".dd", ".img", ".vmdk", ".vhd", ".vhdx",
 })
+E01_EXTS: frozenset[str] = frozenset({".e01", ".ex01", ".e02"})
 
-# Marker placed at the root of every successful extraction. Re-runs use
-# this to prove an extraction completed, distinguishing it from a
-# partial/aborted one.
 _MARKER_FILENAME = ".nighteye_extracted"
 
 
@@ -72,9 +71,11 @@ def _is_archive(path: Path) -> bool:
 
 
 def _is_image(path: Path) -> bool:
-    """Whether the file is a forensic image."""
+    """Whether the file is a forensic image (non-E01, use 7zip)."""
     if not path.is_file():
         return False
+    if path.suffix.lower() in E01_EXTS:
+        return False  # E01 handled by ewfmount
     return path.suffix.lower() in IMAGE_EXTS
 
 
@@ -164,6 +165,70 @@ def _extract_one(source: Path, out_dir: Path) -> bool:
     return True
 
 
+def _have_ewf() -> bool:
+    return shutil.which("ewfmount") is not None
+
+
+def _have_tsk() -> bool:
+    return shutil.which("tsk_recover") is not None and shutil.which("fls") is not None
+
+
+def _extract_e01(source: Path, out_dir: Path) -> bool:
+    """Extract files from an E01 forensic image via ewfmount + tsk_recover.
+
+    On SIFT, ewfmount and sleuthkit are pre-installed. This mounts the
+    E01 as a raw device, then uses tsk_recover to extract all files into
+    out_dir preserving the original directory structure.
+    """
+    if not _have_ewf():
+        logger.warning("ewfmount not found — cannot extract E01 %s. Install with: sudo apt install ewf-tools", source.name)
+        return False
+    if not _have_tsk():
+        logger.warning("sleuthkit not found — cannot recover files from E01 %s. Install with: sudo apt install sleuthkit", source.name)
+        return False
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="nighteye_ewf_") as mount_dir:
+        mount_point = Path(mount_dir)
+        try:
+            # Mount E01 as raw device
+            result = subprocess.run(
+                ["ewfmount", str(source), str(mount_point)],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                logger.error("ewfmount failed for %s: %s", source.name, result.stderr[:500])
+                return False
+
+            # The raw image is at mount_point/ewf1
+            raw_image = mount_point / "ewf1"
+            if not raw_image.exists():
+                logger.error("ewfmount produced no ewf1 device for %s", source.name)
+                return False
+
+            # Extract all files with tsk_recover
+            logger.info("Recovering files from %s via tsk_recover...", source.name)
+            result = subprocess.run(
+                ["tsk_recover", str(raw_image), str(out_dir)],
+                capture_output=True, text=True, timeout=3600,
+            )
+            if result.returncode != 0:
+                logger.warning("tsk_recover completed with warnings for %s", source.name)
+
+        except subprocess.TimeoutExpired:
+            logger.error("E01 extraction timed out for %s", source.name)
+            return False
+        except Exception as exc:
+            logger.error("E01 extraction failed for %s: %s", source.name, exc)
+            return False
+        finally:
+            # Unmount (umount the fuse mount)
+            subprocess.run(["fusermount", "-u", str(mount_point)], capture_output=True, timeout=30)
+
+    _write_marker(out_dir, source)
+    return True
+
+
 # ============================================================
 # Public API
 # ============================================================
@@ -239,17 +304,20 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             continue
 
         if _is_archive(source):
-            logger.info("Extracting archive %s → %s", source.name, out_dir)
+            logger.info("Extracting archive %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
+        elif source.suffix.lower() in E01_EXTS:
+            logger.info("Extracting E01 image %s -> %s via ewfmount", source.name, out_dir)
+            if _extract_e01(source, out_dir):
+                extracted[out_dir.resolve()] = None
         elif _is_image(source):
-            logger.info("Extracting image %s → %s", source.name, out_dir)
+            logger.info("Extracting image %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
             else:
                 logger.warning(
-                    "7zip could not extract %s. For deep E01 support "
-                    "use ewfmount + tsk_recover manually.", source.name
+                    "Could not extract %s with 7zip. Try installing additional tools.", source.name
                 )
 
     if not extracted:
