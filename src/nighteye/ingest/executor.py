@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Iterator
 
-from nighteye.ingest.dispatch import EvidenceType
+from nighteye.ingest.dispatch import EvidenceType, detect_evidence_type
 from nighteye.ingest.evtx import parse_evtx_file
 from nighteye.ingest.ez_tools import is_tool_available, run_ez_tool
 from nighteye.ingest.opensearch_client import NightEyeOSClient
@@ -28,6 +29,13 @@ from nighteye.ingest.parsers.prefetch import parse_prefetch_record
 from nighteye.ingest.parsers.registry import parse_registry_record
 from nighteye.ingest.parsers.shimcache import parse_shimcache_record
 from nighteye.ingest.parsers.srum import parse_srum_record
+
+# Memory-dump file extensions that Volatility / MemProcFS can actually parse.
+# Anything else routed through MEMORY_DUMP (e.g. .body, .txt, .json from
+# previous Vol2 output) is a false positive and should be skipped.
+_REAL_MEMORY_EXTENSIONS = frozenset({
+    ".mem", ".raw", ".dmp", ".vmem", ".lime", ".bin",
+})
 
 __all__ = ["execute_ingest_plan"]
 
@@ -179,42 +187,135 @@ def _stream_directory(
 ) -> Iterator[dict[str, Any]]:
     """Recursively scan a directory and stream all parsable evidence files.
 
-    If the artifact_type is ambiguous (e.g. KAPE_ZIP from precooked/),
-    individual files are re-detected and routed to the correct parser.
+    Used for both KAPE_ZIP / extracted-triage containers and for any
+    `IngestGroup` whose `evidence.path` is a directory rather than a
+    single file. Individual files are detected and routed to the
+    correct parser.
     """
     for item in sorted(dir_path.rglob("*")):
         if not item.is_file():
             continue
+        # Skip our own marker files from the extractor.
+        if item.name == ".nighteye_extracted":
+            continue
         detected = detect_evidence_type(item)
+        # Skip unknown and recursive container types.
         if detected.evidence_type in (EvidenceType.UNKNOWN, EvidenceType.KAPE_ZIP):
             continue
-        # Route to parser based on detected type
+
         file_audit_id = f"{audit_id}-{item.name}"
-        if detected.evidence_type == EvidenceType.EVTX_FILE:
+
+        if detected.evidence_type in (EvidenceType.EVTX_FILE, EvidenceType.EVTX_FOLDER):
             yield from parse_evtx_file(
-                item, case_id=case_id, host_name=host_name,
-                audit_id=file_audit_id, use_evtxecmd=True,
+                item,
+                case_id=case_id,
+                host_name=host_name,
+                audit_id=file_audit_id,
+                use_evtxecmd=True,
             )
-        elif detected.evidence_type in (EvidenceType.REGISTRY_HIVE, EvidenceType.MFT,
-                                         EvidenceType.PREFETCH, EvidenceType.AMCACHE,
-                                         EvidenceType.SHIMCACHE, EvidenceType.SRUM):
-            row_stream = run_ez_tool(detected.evidence_type, item)
-            for row in row_stream or []:
-                doc = None
-                if detected.evidence_type == EvidenceType.REGISTRY_HIVE:
-                    doc = parse_registry_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                elif detected.evidence_type == EvidenceType.MFT:
-                    doc = parse_mft_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                elif detected.evidence_type == EvidenceType.PREFETCH:
-                    doc = parse_prefetch_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                elif detected.evidence_type == EvidenceType.AMCACHE:
-                    doc = parse_amcache_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                elif detected.evidence_type == EvidenceType.SHIMCACHE:
-                    doc = parse_shimcache_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                elif detected.evidence_type == EvidenceType.SRUM:
-                    doc = parse_srum_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
-                if doc:
-                    yield doc
+            continue
+
+        if detected.evidence_type == EvidenceType.MEMORY_DUMP:
+            if not _is_real_memory_dump(item):
+                logger.debug(
+                    "Skipping non-memory file routed as MEMORY_DUMP: %s",
+                    item.name,
+                )
+                continue
+            yield from _run_memory_pipeline(item, host_name, case_id)
+            continue
+
+        if detected.evidence_type in (
+            EvidenceType.REGISTRY_HIVE,
+            EvidenceType.MFT,
+            EvidenceType.PREFETCH,
+            EvidenceType.AMCACHE,
+            EvidenceType.SHIMCACHE,
+            EvidenceType.SRUM,
+        ):
+            yield from _ez_tool_to_docs(
+                detected.evidence_type, item, host_name, file_audit_id
+            )
+            continue
+
+        # Other recognized but unparseable-here types (LNK, JUMPLIST,
+        # WIN_TIMELINE, PCAP, AUTH_LOG, ...) are deliberately skipped.
+        # Logging at debug level so we don't drown the console.
+        logger.debug(
+            "Skipping unsupported detected type %s for %s",
+            detected.evidence_type.value,
+            item.name,
+        )
+
+
+def _is_real_memory_dump(path: Path) -> bool:
+    """Return True only if the file extension matches a real memory dump.
+
+    Volatility 3 fails noisily on text/csv files routed through here
+    because previous Vol2 outputs (timeliner.body, *-apihooks.txt, etc.)
+    are sometimes co-located with real memory dumps in evidence folders.
+    """
+    return path.suffix.lower() in _REAL_MEMORY_EXTENSIONS
+
+
+def _run_memory_pipeline(
+    path: Path, host_name: str, case_id: str
+) -> Iterator[dict[str, Any]]:
+    """Run Vol3 + carvers + MemProcFS on a real memory dump."""
+    from nighteye.ingest.carvers import run_1768, run_bstrings
+    from nighteye.ingest.memprocfs import (
+        extract_memprocfs,
+        is_memprocfs_available,
+    )
+    from nighteye.ingest.volatility import (
+        is_volatility_available,
+        run_volatility,
+    )
+
+    if is_volatility_available():
+        yield from run_volatility(path, host_name=host_name, case_id=case_id)
+    yield from run_bstrings(path, host_name=host_name, case_id=case_id)
+    yield from run_1768(path, host_name=host_name, case_id=case_id)
+    if is_memprocfs_available():
+        for ext_dir in extract_memprocfs(path):
+            logger.info(
+                "MemProcFS extracted memory to %s. Re-run `nighteye ingest`"
+                " on this directory to process the artifacts.",
+                ext_dir,
+            )
+
+
+def _ez_tool_to_docs(
+    artifact_type: EvidenceType,
+    path: Path,
+    host_name: str,
+    audit_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Run the matching EZ Tool and convert each row to an ECS doc."""
+    if not is_tool_available(artifact_type):
+        logger.debug(
+            "EZ Tool not available for %s; skipping %s",
+            artifact_type.value,
+            path.name,
+        )
+        return
+    row_stream = run_ez_tool(artifact_type, path)
+    for row in row_stream or []:
+        doc = None
+        if artifact_type == EvidenceType.REGISTRY_HIVE:
+            doc = parse_registry_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        elif artifact_type == EvidenceType.MFT:
+            doc = parse_mft_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        elif artifact_type == EvidenceType.PREFETCH:
+            doc = parse_prefetch_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        elif artifact_type == EvidenceType.AMCACHE:
+            doc = parse_amcache_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        elif artifact_type == EvidenceType.SHIMCACHE:
+            doc = parse_shimcache_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        elif artifact_type == EvidenceType.SRUM:
+            doc = parse_srum_record(row, host_name=host_name, source_file=str(path), audit_id=audit_id)
+        if doc:
+            yield doc
 
 
 def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, Any]]:
@@ -226,10 +327,21 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
         source_file = str(evidence.path)
         audit_id = f"nighteye-ingest-{evidence.path.name}-{int(time.time())}"
 
-        # Directories: scan for individual files inside and process each
+        # Directories: scan for individual files inside and process each.
+        # Also covers KAPE_ZIP "containers" — a directory of mixed
+        # triage artifacts that we fan out per-file.
         if evidence.path.is_dir():
             yield from _stream_directory(
                 evidence.path, artifact_type, case_id, host_name, source_file, audit_id
+            )
+            continue
+
+        # KAPE_ZIP files (rare — usually a directory) get treated the same.
+        if artifact_type == EvidenceType.KAPE_ZIP:
+            logger.debug(
+                "KAPE_ZIP file %s — handled by extractor; per-file dispatch happens"
+                " on the extracted directory in another group.",
+                evidence.path.name,
             )
             continue
 
@@ -240,66 +352,49 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
                 case_id=case_id,
                 host_name=host_name,
                 audit_id=audit_id,
-                use_evtxecmd=True,  # Will fallback to pure-Python if missing
+                use_evtxecmd=True,
             )
-            
-            # 1b. Hayabusa Alerts
-            from nighteye.ingest.hayabusa import run_hayabusa, is_hayabusa_available
+            from nighteye.ingest.hayabusa import is_hayabusa_available, run_hayabusa
             if is_hayabusa_available():
                 yield from run_hayabusa(evidence.path, host_name=host_name, case_id=case_id)
-            
-            # 1c. Chainsaw Alerts
-            from nighteye.ingest.chainsaw import run_chainsaw, is_chainsaw_available
+            from nighteye.ingest.chainsaw import is_chainsaw_available, run_chainsaw
             if is_chainsaw_available():
                 yield from run_chainsaw(evidence.path, host_name=host_name, case_id=case_id)
-                
             continue
 
-        # 2. Memory Dumps
+        # 2. Memory Dumps — only run heavy memory tools on real memory files.
+        # The dispatch layer used to coerce previous Vol2 output (.body,
+        # apihooks.txt, ...) into MEMORY_DUMP; this guard keeps Volatility
+        # from failing a thousand times on text artifacts.
         if artifact_type == EvidenceType.MEMORY_DUMP:
-            from nighteye.ingest.volatility import run_volatility, is_volatility_available
-            if is_volatility_available():
-                yield from run_volatility(evidence.path, host_name=host_name, case_id=case_id)
-                
-            from nighteye.ingest.carvers import run_bstrings, run_1768
-            yield from run_bstrings(evidence.path, host_name=host_name, case_id=case_id)
-            yield from run_1768(evidence.path, host_name=host_name, case_id=case_id)
-                
-            from nighteye.ingest.memprocfs import extract_memprocfs, is_memprocfs_available
-            if is_memprocfs_available():
-                # MemProcFS extracts files, it doesn't yield docs directly.
-                # The extracted files will need to be ingested via a separate recursive ingest plan.
-                # To keep streaming simple, we just log the extracted directory and
-                # let the CLI handle recursive plans if needed, or we just yield a metadata doc.
-                for ext_dir in extract_memprocfs(evidence.path):
-                    logger.info("MemProcFS extracted memory to %s. Run `nighteye ingest` on this directory to process the artifacts.", ext_dir)
-                    
+            if not _is_real_memory_dump(evidence.path):
+                logger.info(
+                    "Skipping non-memory file routed as MEMORY_DUMP: %s",
+                    evidence.path.name,
+                )
+                continue
+            yield from _run_memory_pipeline(evidence.path, host_name, case_id)
             continue
 
-        # 3. EZ Tools Parsing
-        if not is_tool_available(artifact_type):
-            logger.warning("Required EZ Tool not found for %s. Skipping %s.", artifact_type.value, evidence.path.name)
+        # 3. EZ Tools Parsing — for the artifact types we have parsers for.
+        if artifact_type in (
+            EvidenceType.REGISTRY_HIVE,
+            EvidenceType.MFT,
+            EvidenceType.PREFETCH,
+            EvidenceType.AMCACHE,
+            EvidenceType.SHIMCACHE,
+            EvidenceType.SRUM,
+        ):
+            yield from _ez_tool_to_docs(
+                artifact_type, evidence.path, host_name, audit_id
+            )
             continue
 
-        row_stream = run_ez_tool(artifact_type, evidence.path)
-        if not row_stream:
-            continue
-
-        # Map rows to ECS based on the artifact type
-        for row in row_stream:
-            doc = None
-            if artifact_type == EvidenceType.REGISTRY_HIVE:
-                doc = parse_registry_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-            elif artifact_type == EvidenceType.MFT:
-                doc = parse_mft_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-            elif artifact_type == EvidenceType.PREFETCH:
-                doc = parse_prefetch_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-            elif artifact_type == EvidenceType.AMCACHE:
-                doc = parse_amcache_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-            elif artifact_type == EvidenceType.SHIMCACHE:
-                doc = parse_shimcache_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-            elif artifact_type == EvidenceType.SRUM:
-                doc = parse_srum_record(row, host_name=host_name, source_file=source_file, audit_id=audit_id)
-
-            if doc:
-                yield doc
+        # 4. Recognized but no parser yet (LNK, JUMPLIST, WIN_TIMELINE,
+        # PCAP, AUTH_LOG, ...). Log once at debug level rather than
+        # spamming a warning per file.
+        logger.debug(
+            "No parser for %s — skipping %s",
+            artifact_type.value,
+            evidence.path.name,
+        )
