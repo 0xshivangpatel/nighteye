@@ -44,7 +44,7 @@ dev = [
 ]
 parsers = [
     "evtx>=0.8",              # pure-Python EVTX parser
-    "python-registry>=1.4",   # pure-Python Windows registry hive parser
+    "python-registry>=1.3",   # pure-Python Windows registry hive parser
     "pylnk3>=0.4",            # pure-Python LNK parser
 ]
 
