@@ -148,8 +148,7 @@ def create_portal_app(
             recent_hypotheses = []
 
         active_case = get_active_case()
-        return templates.TemplateResponse("index.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "index.html", {
             "case": active_case.__dict__ if active_case else {},
             "stats": {
                 "clusters": clusters,
@@ -185,8 +184,7 @@ def create_portal_app(
             logger.warning("Failed to load clusters: %s", exc)
             clusters = []
 
-        return templates.TemplateResponse("clusters.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "clusters.html", {
             "clusters": clusters,
         })
 
@@ -227,8 +225,7 @@ def create_portal_app(
             cluster = {}
             hypotheses = []
 
-        return templates.TemplateResponse("cluster_detail.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "cluster_detail.html", {
             "cluster": cluster,
             "hypotheses": [dict(h) for h in hypotheses],
         })
@@ -264,8 +261,7 @@ def create_portal_app(
             logger.warning("Failed to load hypotheses: %s", exc)
             hypotheses = []
 
-        return templates.TemplateResponse("hypotheses.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "hypotheses.html", {
             "hypotheses": hypotheses,
         })
 
@@ -308,8 +304,7 @@ def create_portal_app(
             hypothesis = {}
             related_clusters = []
 
-        return templates.TemplateResponse("hypothesis_detail.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "hypothesis_detail.html", {
             "hypothesis": hypothesis,
             "related_clusters": [dict(c) for c in related_clusters],
         })
@@ -343,8 +338,7 @@ def create_portal_app(
             logger.warning("Failed to load timeline: %s", exc)
             events = []
 
-        return templates.TemplateResponse("timeline.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "timeline.html", {
             "events": events,
         })
 
@@ -415,8 +409,7 @@ def create_portal_app(
             links = []
             mermaid_graph = "flowchart LR\n    Empty[No data available]"
 
-        return templates.TemplateResponse("graph.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "graph.html", {
             "nodes": nodes,
             "links": links,
             "mermaid_graph": mermaid_graph,
@@ -442,8 +435,7 @@ def create_portal_app(
             logger.warning("Failed to load disturbances: %s", exc)
             disturbances = []
 
-        return templates.TemplateResponse("disturbances.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "disturbances.html", {
             "disturbances": disturbances,
         })
 
@@ -467,8 +459,7 @@ def create_portal_app(
             logger.warning("Failed to load gaps: %s", exc)
             gaps = []
 
-        return templates.TemplateResponse("gaps.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "gaps.html", {
             "gaps": gaps,
         })
 

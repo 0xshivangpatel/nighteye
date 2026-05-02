@@ -445,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--base-dir", default="/var/lib/nighteye", help="Base data directory")
+    parser.add_argument("--version", action="version", version=f"nighteye {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
