@@ -48,7 +48,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         name=args.name,
         examiner=args.examiner,
         description=args.description or "",
-        cases_dir=Path(args.base_dir) if args.base_dir else None,
+        cases_dir=Path(args.base_dir) if getattr(args, "base_dir", None) else None,
     )
     print(f"Case created: {case.id}")
     print(f"  Name: {case.case_name}")
@@ -455,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("--name", "-n", required=True, help="Case name")
     init_parser.add_argument("--examiner", "-e", required=True, help="Examiner name")
     init_parser.add_argument("--description", "-d", help="Case description")
+    init_parser.add_argument("--base-dir", default=None, help="Base data directory (default: /var/lib/nighteye)")
     init_parser.set_defaults(func=cmd_init)
 
     # status
