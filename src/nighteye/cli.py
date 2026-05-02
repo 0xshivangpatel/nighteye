@@ -45,10 +45,10 @@ def _setup_logging(verbose: bool = False) -> None:
 def cmd_init(args: argparse.Namespace) -> int:
     """Initialize a new case."""
     case = create_case(
-        case_name=args.name,
+        name=args.name,
         examiner=args.examiner,
         description=args.description or "",
-        base_dir=args.base_dir,
+        cases_dir=Path(args.base_dir) if args.base_dir else None,
     )
     print(f"Case created: {case.id}")
     print(f"  Name: {case.case_name}")
