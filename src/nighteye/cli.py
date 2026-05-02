@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from nighteye import __version__
 from nighteye.case import create_case, get_active_case, list_cases, CaseInfo
 from nighteye.db import connect
 from nighteye.ingest.opensearch_client import NightEyeOSClient
