@@ -239,13 +239,48 @@ def _stream_directory(
             continue
 
         # Other recognized but unparseable-here types (LNK, JUMPLIST,
-        # WIN_TIMELINE, PCAP, AUTH_LOG, ...) are deliberately skipped.
-        # Logging at debug level so we don't drown the console.
-        logger.debug(
-            "Skipping unsupported detected type %s for %s",
-            detected.evidence_type.value,
-            item.name,
-        )
+        # WIN_TIMELINE, PCAP, AUTH_LOG, ...) — emit a metadata document
+        # so the file is indexed even without a dedicated parser.
+        yield _metadata_doc(item, detected.evidence_type, host_name, source_file, audit_id)
+
+
+def _metadata_doc(
+    path: Path,
+    evidence_type: EvidenceType,
+    host_name: str,
+    source_file: str,
+    audit_id: str,
+) -> dict[str, Any]:
+    """Produce a minimal ECS metadata document for unsupported file types.
+
+    Ensures every evidence file is indexed in OpenSearch so the case has
+    complete provenance even when dedicated parsers are unavailable.
+    """
+    try:
+        size = path.stat().st_size
+        mtime = path.stat().st_mtime
+    except OSError:
+        size = 0
+        mtime = 0
+
+    from nighteye.ingest.ecs import build_ecs_doc
+
+    return build_ecs_doc(
+        host_name=host_name,
+        event_code=evidence_type.value,
+        event_action="evidence-indexed",
+        event_category="artifact",
+        nighteye_source_file=str(path),
+        nighteye_audit_id=audit_id,
+        nighteye_parser="metadata",
+        nighteye_canonical_type=evidence_type.value.upper(),
+        extra={
+            "file.name": path.name,
+            "file.path": str(path),
+            "file.size": size,
+            "file.mtime": mtime,
+        },
+    )
 
 
 def _is_real_memory_dump(path: Path) -> bool:
@@ -391,10 +426,8 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
             continue
 
         # 4. Recognized but no parser yet (LNK, JUMPLIST, WIN_TIMELINE,
-        # PCAP, AUTH_LOG, ...). Log once at debug level rather than
-        # spamming a warning per file.
-        logger.debug(
-            "No parser for %s — skipping %s",
-            artifact_type.value,
-            evidence.path.name,
-        )
+        # PCAP, AUTH_LOG, ...) — emit metadata doc so file is indexed.
+        if artifact_type != EvidenceType.UNKNOWN:
+            yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
+        else:
+            logger.debug("Skipping UNKNOWN file: %s", evidence.path.name)

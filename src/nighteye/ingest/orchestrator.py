@@ -217,6 +217,31 @@ def resolve_host_name(
         if _is_host_like(part):
             return _sanitize_host(part)
 
+    # Strategy 2.5: Extract IP from directory name fragments
+    # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → "10.3.58.5"
+    for part in parts:
+        # Try to find IP-like pattern in the part name
+        import re as _re
+        ip_match = _re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
+        if ip_match:
+            ip = ip_match.group(1).replace("-", ".")
+            # Validate it's a real IP
+            octets = ip.split(".")
+            if len(octets) == 4 and all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
+                return _sanitize_host(ip)
+
+    # Strategy 2.6: Extract a clean hostname from compound names
+    # E.g., "win7-32-nromanoff-10-3-58-5-nighteye" → find "nromanoff"
+    for part in parts:
+        segments = part.lower().replace("_", "-").split("-")
+        for seg in segments:
+            if seg in ("nighteye", "win7", "win", "xp", "c", "drive", "32", "64", "nighteye"):
+                continue
+            if seg.isdigit():
+                continue
+            if len(seg) >= 3 and any(c.isalpha() for c in seg):
+                return _sanitize_host(seg)
+
     # Strategy 3: First non-root directory
     if len(parts) >= 2:
         candidate = parts[0]
