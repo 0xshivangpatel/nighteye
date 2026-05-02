@@ -61,6 +61,8 @@ class EvidenceType(str, Enum):
 # Extension → type mapping (case-insensitive)
 _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".e01": EvidenceType.E01_IMAGE,
+    ".ex01": EvidenceType.E01_IMAGE,
+    ".e02": EvidenceType.E01_IMAGE,
     ".evtx": EvidenceType.EVTX_FILE,
     ".mem": EvidenceType.MEMORY_DUMP,
     ".dmp": EvidenceType.MEMORY_DUMP,
@@ -76,6 +78,9 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".ost": EvidenceType.OUTLOOK,
     ".automaticdestinations-ms": EvidenceType.JUMPLIST,
     ".customdestinations-ms": EvidenceType.JUMPLIST,
+    ".csv": EvidenceType.WIN_TIMELINE,   # bodyfile / supertimeline / volatility output
+    ".json": EvidenceType.WIN_TIMELINE,  # volatility JSON / redline JSON output
+    ".jsonl": EvidenceType.WIN_TIMELINE,
 }
 
 # Known registry hive filenames (no extension)
@@ -120,6 +125,27 @@ _PATH_SUBSTRING_HINTS: list[tuple[str, EvidenceType]] = [
     ("\\inetpub\\logs\\", EvidenceType.IIS_LOG),
     ("/apache2/", EvidenceType.APACHE_LOG),
     ("/httpd/", EvidenceType.APACHE_LOG),
+    ("/shimcache/", EvidenceType.SHIMCACHE),
+    ("\\shimcache\\", EvidenceType.SHIMCACHE),
+    ("/volatility/", EvidenceType.MEMORY_DUMP),
+    ("/memory/", EvidenceType.MEMORY_DUMP),
+    ("/timeline/", EvidenceType.WIN_TIMELINE),
+    ("\\timeline\\", EvidenceType.WIN_TIMELINE),
+    ("/redline/", EvidenceType.WIN_TIMELINE),
+    ("\\redline\\", EvidenceType.WIN_TIMELINE),
+    ("/precooked/",  EvidenceType.KAPE_ZIP),  # Treat precooked as triage bundle — scan contents recursively
+]
+
+# Directory-level detection: if dir contains X type of files, treat as Y
+_DIR_CONTENT_HINTS: list[tuple[str, EvidenceType]] = [
+    (".evtx", EvidenceType.EVTX_FOLDER),
+    (".pf", EvidenceType.PREFETCH),
+    ("$mft", EvidenceType.MFT),
+    ("sam", EvidenceType.REGISTRY_HIVE),
+    ("system", EvidenceType.REGISTRY_HIVE),
+    ("software", EvidenceType.REGISTRY_HIVE),
+    ("amcache.hve", EvidenceType.AMCACHE),
+    ("srudb.dat", EvidenceType.SRUM),
 ]
 
 
@@ -159,16 +185,42 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
     if path.is_file():
         size = path.stat().st_size
 
-    # Directory: check if it's an EVTX folder
+    # Directory: check if it contains recognized evidence patterns
     if path.is_dir():
-        evtx_files = list(path.rglob("*.evtx"))
-        if evtx_files:
-            return DetectedEvidence(
-                path=path,
-                evidence_type=EvidenceType.EVTX_FOLDER,
-                size_bytes=sum(f.stat().st_size for f in evtx_files),
-                note=f"Contains {len(evtx_files)} EVTX files",
-            )
+        size = 0
+        # Check for each content pattern
+        for pattern, etype in _DIR_CONTENT_HINTS:
+            if pattern.startswith("."):
+                # Extension match
+                files = list(path.rglob(f"*{pattern}"))
+            else:
+                # Filename match (case-insensitive)
+                files = [
+                    f for f in path.rglob("*")
+                    if f.is_file() and f.name.lower() == pattern.lower()
+                ]
+            if files:
+                total_size = sum(f.stat().st_size for f in files)
+                return DetectedEvidence(
+                    path=path,
+                    evidence_type=etype,
+                    size_bytes=total_size,
+                    note=f"Contains {len(files)} {pattern} files",
+                )
+
+        # Check path hints for directories
+        full_path_lower = str(path).lower().replace("\\", "/")
+        for needle, etype in _PATH_SUBSTRING_HINTS:
+            if needle.replace("\\", "/") in full_path_lower:
+                # For precooked/triage dirs, return as KAPE_ZIP (will be processed as triage)
+                return DetectedEvidence(
+                    path=path,
+                    evidence_type=etype,
+                    size_bytes=0,
+                    note=f"Matched directory hint: {needle}",
+                )
+
+        # Fall through: let individual files inside this dir be detected
         return DetectedEvidence(
             path=path,
             evidence_type=EvidenceType.UNKNOWN,

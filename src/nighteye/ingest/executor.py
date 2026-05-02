@@ -169,6 +169,54 @@ def execute_ingest_plan(
     return result
 
 
+def _stream_directory(
+    dir_path: Path,
+    artifact_type: EvidenceType,
+    case_id: str,
+    host_name: str,
+    source_file: str,
+    audit_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Recursively scan a directory and stream all parsable evidence files.
+
+    If the artifact_type is ambiguous (e.g. KAPE_ZIP from precooked/),
+    individual files are re-detected and routed to the correct parser.
+    """
+    for item in sorted(dir_path.rglob("*")):
+        if not item.is_file():
+            continue
+        detected = detect_evidence_type(item)
+        if detected.evidence_type in (EvidenceType.UNKNOWN, EvidenceType.KAPE_ZIP):
+            continue
+        # Route to parser based on detected type
+        file_audit_id = f"{audit_id}-{item.name}"
+        if detected.evidence_type == EvidenceType.EVTX_FILE:
+            yield from parse_evtx_file(
+                item, case_id=case_id, host_name=host_name,
+                audit_id=file_audit_id, use_evtxecmd=True,
+            )
+        elif detected.evidence_type in (EvidenceType.REGISTRY_HIVE, EvidenceType.MFT,
+                                         EvidenceType.PREFETCH, EvidenceType.AMCACHE,
+                                         EvidenceType.SHIMCACHE, EvidenceType.SRUM):
+            row_stream = run_ez_tool(detected.evidence_type, item)
+            for row in row_stream or []:
+                doc = None
+                if detected.evidence_type == EvidenceType.REGISTRY_HIVE:
+                    doc = parse_registry_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                elif detected.evidence_type == EvidenceType.MFT:
+                    doc = parse_mft_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                elif detected.evidence_type == EvidenceType.PREFETCH:
+                    doc = parse_prefetch_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                elif detected.evidence_type == EvidenceType.AMCACHE:
+                    doc = parse_amcache_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                elif detected.evidence_type == EvidenceType.SHIMCACHE:
+                    doc = parse_shimcache_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                elif detected.evidence_type == EvidenceType.SRUM:
+                    doc = parse_srum_record(row, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+                if doc:
+                    yield doc
+
+
 def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, Any]]:
     """Yield all ECS documents from all files in a group."""
     artifact_type = group.artifact_type
@@ -176,8 +224,14 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
 
     for evidence in group.files:
         source_file = str(evidence.path)
-        # Unique audit ID for this file's ingestion
         audit_id = f"nighteye-ingest-{evidence.path.name}-{int(time.time())}"
+
+        # Directories: scan for individual files inside and process each
+        if evidence.path.is_dir():
+            yield from _stream_directory(
+                evidence.path, artifact_type, case_id, host_name, source_file, audit_id
+            )
+            continue
 
         # 1. EVTX Parsing
         if artifact_type in (EvidenceType.EVTX_FILE, EvidenceType.EVTX_FOLDER):
