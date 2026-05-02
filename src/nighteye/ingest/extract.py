@@ -103,17 +103,33 @@ def _has_any_content(out_dir: Path) -> bool:
     return False
 
 
-def _existing_extractions(extractions_dir: Path) -> list[Path]:
-    """List every subdir in extractions/ that holds previously-extracted data."""
-    out: list[Path] = []
-    if not extractions_dir.is_dir():
-        return out
-    for child in sorted(extractions_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if _has_marker(child) or _has_any_content(child):
-            out.append(child)
-    return out
+def _output_dir_for(source: Path) -> Path:
+    """Determine extraction output directory: next to source on same filesystem.
+
+    Extracts into ``<source_dir>/<archive_stem>_nighteye/`` alongside the
+    archive so disk space is consumed on the external drive, not the VM.
+    Falls back to the case extractions dir only if the source directory
+    is not writable.
+    """
+    same_drive = source.parent
+    name = source.stem
+    if source.suffixes[-2:] == [".tar", ".gz"] or source.suffixes[-2:] == [".tar", ".bz2"]:
+        name = source.name.replace(".tar.gz", "").replace(".tar.bz2", "")
+    out_dir = same_drive / f"{name}_nighteye"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Test writability
+        (out_dir / ".write_test").touch()
+        (out_dir / ".write_test").unlink()
+        return out_dir
+    except (OSError, PermissionError):
+        pass
+    # Fallback to case extractions dir
+    extractions_dir = _resolve_extractions_dir()
+    if extractions_dir:
+        return extractions_dir / name
+    # Last resort: same drive, may fail on write
+    return out_dir
 
 
 def _have_7z() -> bool:
@@ -156,35 +172,30 @@ def _extract_one(source: Path, out_dir: Path) -> bool:
 def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
     """Scan and extract supported archives, returning all extraction dirs.
 
-    Idempotency guarantees:
-      - Re-running with the same target_dir is safe; previously-extracted
-        archives are skipped.
-      - **If the source archive has been deleted or moved**, the existing
-        extracted directory is still returned. This was the user-reported
-        bug — earlier the function returned ``[]`` early when no archives
-        were found, hiding the previously-extracted content.
+    Extractions go alongside the source archive on the same filesystem
+    (e.g. HDD) so the VM disk is not consumed. Falls back to the case
+    extractions dir only if the source drive is read-only.
 
-    Args:
-        target_dir: A file or directory to scan for archives/images.
-        recursive: Recurse into subdirectories.
-
-    Returns:
-        List of directory paths under ``case/extractions/`` containing
-        evidence for downstream parsers. Sorted, de-duplicated.
+    Idempotency: re-running skips already-extracted archives; existing
+    extracted dirs are always returned even if source archives are gone.
     """
-    extractions_dir = _resolve_extractions_dir()
-    if extractions_dir is None:
-        return []
-
     target_dir = Path(target_dir)
     extracted: dict[Path, None] = {}
 
-    # Always seed the result with previously-extracted dirs. This is the
-    # idempotency fix.
-    for prior in _existing_extractions(extractions_dir):
-        extracted[prior.resolve()] = None
+    # Seed with previously-extracted dirs on the HDD (look next to archives)
+    for marker_dir in target_dir.rglob(f"*_{_MARKER_FILENAME}") if target_dir.is_dir() else []:
+        parent = marker_dir.parent
+        if parent.is_dir() and _has_any_content(parent):
+            extracted[parent.resolve()] = None
 
-    # Collect new archives/images to try extracting.
+    # Also seed from case extractions dir
+    extractions_dir = _resolve_extractions_dir()
+    if extractions_dir and extractions_dir.is_dir():
+        for child in sorted(extractions_dir.iterdir()):
+            if child.is_dir() and (_has_marker(child) or _has_any_content(child)):
+                extracted[child.resolve()] = None
+
+    # Collect archives to try extracting
     targets: list[Path] = []
     if target_dir.is_file():
         if _is_archive(target_dir) or _is_image(target_dir):
@@ -198,37 +209,21 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             for p in scan_fn(f"*{ext.upper()}"):
                 if p.is_file() and not p.is_symlink():
                     targets.append(p)
-        # double-extension archives (.tar.gz, .tar.bz2)
         for p in scan_fn("*.tar.gz"):
             if p.is_file() and not p.is_symlink():
                 targets.append(p)
 
-    # Wrap in tqdm if available; fall back gracefully.
     try:
-        from tqdm import tqdm  # type: ignore
-
+        from tqdm import tqdm
         target_iter = tqdm(targets, desc="Extracting evidence", unit="file", leave=False)
     except ImportError:
         target_iter = targets
 
     for source in target_iter:
-        out_dir = extractions_dir / source.stem
-        # Some tools name `archive.tar.gz` whose .stem is `archive.tar`.
-        # Use the full name (without final extension) when that happens.
-        if source.suffixes[-2:] == [".tar", ".gz"] or source.suffixes[-2:] == [
-            ".tar",
-            ".bz2",
-        ]:
-            out_dir = extractions_dir / source.name.replace(".tar.gz", "").replace(
-                ".tar.bz2", ""
-            )
+        out_dir = _output_dir_for(source)
 
         if _has_marker(out_dir) or _has_any_content(out_dir):
-            logger.info(
-                "Skipping already-extracted %s (existing dir: %s)",
-                source.name,
-                out_dir.name,
-            )
+            logger.info("Skipping already-extracted %s (existing dir: %s)", source.name, out_dir.name)
             extracted[out_dir.resolve()] = None
             continue
 
@@ -237,19 +232,14 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
         elif _is_image(source):
-            # 7zip handles many forensic image formats. For E01 the success
-            # rate depends on the variant; fall back instructions are
-            # logged on failure.
             logger.info("Extracting image %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
             else:
                 logger.warning(
                     "7zip could not extract image %s. For deep E01 support "
-                    "use ewfmount + tsk_recover manually and place output "
-                    "in %s.",
-                    source.name,
-                    out_dir,
+                    "use ewfmount + tsk_recover manually and place output in %s.",
+                    source.name, out_dir,
                 )
 
     return sorted(extracted.keys())
