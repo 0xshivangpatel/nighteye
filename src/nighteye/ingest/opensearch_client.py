@@ -73,6 +73,15 @@ class NightEyeOSClient:
         self._client: OpenSearch | None = None
         self._consecutive_failures: int = 0
         self._breaker_tripped: bool = False
+        # Auto-connect so callers don't need explicit connect()
+        try:
+            self.connect()
+        except ConnectionError:
+            logger.warning(
+                "OpenSearch not available at %s — ingest will fail. "
+                "Start OpenSearch with: docker compose up -d",
+                self._config.url,
+            )
 
     @property
     def connected(self) -> bool:
