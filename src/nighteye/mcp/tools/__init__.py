@@ -1,20 +1,22 @@
 """MCP Tool Definitions for NightEye.
 
-All ~40 tools exposed to the AI agent via Model Context Protocol.
+All MCP tools exposed to the AI agent via Model Context Protocol.
 Tools are organized by investigation phase.
 
 References:
   - docs/ARCHITECTURE.md § 9 (Layer 5: Recursive AI Investigation)
+  - docs/JOURNAL.md (Layer 6: Persistent Investigation State)
 """
 
 from __future__ import annotations
 
-from nighteye.mcp.tools.evidence_tools import *
-from nighteye.mcp.tools.cluster_tools import *
-from nighteye.mcp.tools.hypothesis_tools import *
-from nighteye.mcp.tools.graph_tools import *
-from nighteye.mcp.tools.report_tools import *
 from nighteye.mcp.tools.case_tools import *
+from nighteye.mcp.tools.cluster_tools import *
+from nighteye.mcp.tools.evidence_tools import *
+from nighteye.mcp.tools.graph_tools import *
+from nighteye.mcp.tools.hypothesis_tools import *
+from nighteye.mcp.tools.journal_tools import *
+from nighteye.mcp.tools.report_tools import *
 
 __all__ = [
     # Evidence tools
@@ -59,4 +61,9 @@ __all__ = [
     "list_hosts",
     "get_evidence_gaps",
     "get_disturbances",
+    # Journal tools (Layer 6)
+    "journal_checkpoint",
+    "journal_record_decision",
+    "journal_query",
+    "journal_resume",
 ]

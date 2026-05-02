@@ -138,8 +138,53 @@ def _eval_tools_dropped_on_target(cluster: Cluster, context: list[CanonicalEvent
     return False
 
 def _eval_target_not_previously_accessed(cluster: Cluster, context: list[CanonicalEvent]) -> bool:
-    """Check if target was not previously accessed by same user."""
-    # Would require historical baseline; simplified
+    """Check if target host was not previously accessed by same user.
+
+    Heuristic: among the supplied context events for this host, look for
+    AUTHENTICATION events by the same user that PREDATE the trigger
+    event by more than 24h. If none exist, the target appears 'new' to
+    this user and the signal applies. Without a real long-window
+    baseline this is necessarily approximate, so we are conservative —
+    return False (signal does NOT apply) when in doubt rather than
+    biasing every cluster upward.
+    """
+    user = cluster.trigger_event.user
+    host = cluster.trigger_event.host_name
+    trigger_ts = cluster.trigger_event.timestamp
+    if not user or not host or not trigger_ts:
+        return False
+
+    from datetime import datetime, timedelta, timezone
+
+    def _parse(ts: str):
+        try:
+            norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+            dt = datetime.fromisoformat(norm)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    trig_dt = _parse(trigger_ts)
+    if trig_dt is None:
+        return False
+    threshold = trig_dt - timedelta(hours=24)
+
+    # Look for the same user authenticating to the same host BEFORE the
+    # threshold. If found, this is a recurring user and the "not
+    # previously accessed" signal does NOT apply.
+    for evt in context:
+        if evt.canonical_type != CanonicalType.AUTHENTICATION:
+            continue
+        if evt.host_name != host or evt.user != user:
+            continue
+        evt_dt = _parse(evt.timestamp)
+        if evt_dt is None:
+            continue
+        if evt_dt < threshold:
+            return False
+    # No prior authentication found within context — treat as new access.
     return True
 
 def _eval_occurred_after_initial_compromise(cluster: Cluster, context: list[CanonicalEvent]) -> bool:

@@ -27,7 +27,7 @@ from nighteye.models import (
     CausalLink,
 )
 from nighteye.db import connect, execute_with_retry, transaction
-from nighteye.confidence import compute_adaptive_confidence
+from nighteye.confidence import compute_adaptive_confidence_from_db
 from nighteye.provenance import derive_provenance
 
 __all__ = [
@@ -177,7 +177,7 @@ def record_hypothesis(
         from nighteye.models import ClusterStrength
         cluster_strength = ClusterStrength.WEAK
 
-    confidence = compute_adaptive_confidence(
+    confidence = compute_adaptive_confidence_from_db(
         case_id=case_id,
         db_conn=db_conn,
         provenance_tier=provenance_tier,

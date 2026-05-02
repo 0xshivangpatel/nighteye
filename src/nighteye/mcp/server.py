@@ -62,6 +62,14 @@ from nighteye.mcp.tools.case_tools import (
     get_evidence_gaps,
     get_disturbances,
 )
+from nighteye.mcp.tools.journal_tools import (
+    journal_checkpoint,
+    journal_record_decision,
+    journal_query,
+    journal_resume,
+)
+from nighteye.correlation.root_cause import find_root_cause as find_root_cause_impl
+from nighteye.validation.end_of_case import validate_case_readiness as validate_case_readiness_impl
 
 __all__ = ["create_mcp_server"]
 
@@ -566,7 +574,89 @@ def create_mcp_server() -> FastMCP:
         """
         return get_disturbances(case_id, host)
 
-    logger.info("MCP server created with %d tools", len(mcp._tools))
+    # ========================================================
+    # Journal Tools (Layer 6: Persistent Investigation State)
+    # ========================================================
+
+    @mcp.tool()
+    def tool_journal_checkpoint(
+        summary: str,
+        next_steps: list[str] | None = None,
+        case_id: str | None = None,
+        agent_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a CHECKPOINT_SUMMARY journal entry.
+
+        Call this before context approaches exhaustion or when a phase of
+        the investigation is complete. The next session reads this via
+        journal_resume to know where to pick up.
+        """
+        return journal_checkpoint(summary, next_steps, case_id, agent_session_id)
+
+    @mcp.tool()
+    def tool_journal_record_decision(
+        summary: str,
+        rationale: str,
+        hypotheses_considered: list[str] | None = None,
+        case_id: str | None = None,
+        agent_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an INVESTIGATION_DECISION entry capturing reasoning.
+
+        Use at decision points: pivots, hypothesis selection, when ruling
+        out paths. The rationale becomes part of the final report.
+        """
+        return journal_record_decision(
+            summary, rationale, hypotheses_considered, case_id, agent_session_id
+        )
+
+    @mcp.tool()
+    def tool_journal_query(
+        limit: int = 20,
+        entry_type: str | None = None,
+        case_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return recent journal entries, newest first."""
+        return journal_query(limit, entry_type, case_id)
+
+    @mcp.tool()
+    def tool_journal_resume(case_id: str | None = None) -> dict[str, Any]:
+        """Build the session-resume digest. First call in any session.
+
+        Returns a compact summary of prior session state, hypothesis counts,
+        recent findings, open evidence gaps, and suggested next actions.
+        """
+        return journal_resume(case_id)
+
+    # ========================================================
+    # Correlation + Validation
+    # ========================================================
+
+    @mcp.tool()
+    def tool_find_root_cause(case_id: str | None = None) -> dict[str, Any]:
+        """Walk approved hypotheses backward to identify the root cause.
+
+        Returns the earliest causally-supported event and the kill chain
+        derived from approved findings + causal links.
+        """
+        return find_root_cause_impl(case_id)
+
+    @mcp.tool()
+    def tool_validate_case_readiness(case_id: str | None = None) -> dict[str, Any]:
+        """End-of-case validation pass.
+
+        Reports DRAFT hypotheses, contradicting causal links, and unresolved
+        evidence gaps that block report generation.
+        """
+        return validate_case_readiness_impl(case_id)
+
+    # FastMCP exposes registered tools via the public iterator; fall back
+    # to private attribute only if the public attribute is absent.
+    try:
+        tool_count = len(list(mcp.list_tools()))  # type: ignore[attr-defined]
+    except Exception:
+        tool_count = len(getattr(mcp, "_tools", {}))
+    logger.info("MCP server created with %d tools", tool_count)
     return mcp
 
 

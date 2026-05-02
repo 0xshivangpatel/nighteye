@@ -59,10 +59,25 @@ def map_ecs_to_canonical(
         remote_ip = doc.get("source", {}).get("ip", "")
         remote_port = doc.get("source", {}).get("port")
 
-    registry_key = doc.get("registry.value_data", "") # ECS custom fields
-    
-    alert_name = doc.get("rule.name", "")
-    alert_level = doc.get("rule.level", "")
+    # ECS uses nested objects, not dotted keys. Support both the nested
+    # form (correct) and a flattened form (some tools emit this).
+    registry_obj = doc.get("registry") or {}
+    if isinstance(registry_obj, dict):
+        registry_key = (
+            registry_obj.get("key")
+            or registry_obj.get("path")
+            or registry_obj.get("value_data", "")
+        )
+    else:
+        registry_key = doc.get("registry.value_data", "") or doc.get("registry.key", "")
+
+    rule_obj = doc.get("rule") or {}
+    if isinstance(rule_obj, dict):
+        alert_name = rule_obj.get("name", "")
+        alert_level = rule_obj.get("level", "")
+    else:
+        alert_name = doc.get("rule.name", "")
+        alert_level = doc.get("rule.level", "")
 
     # 1. Map Alerts
     if event_kind == "alert" or event_action == "sigma-alert":

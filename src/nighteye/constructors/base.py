@@ -55,43 +55,82 @@ class CounterSignal:
 
 
 class Cluster:
-    """A behavioral cluster built from multiple canonical events and signals."""
-    def __init__(self, constructor_name: str, host_name: str, trigger_event: CanonicalEvent, trigger_name: str, base_score: int):
-        self.cluster_id = f"cluster-{hashlib.sha256(f'{constructor_name}-{trigger_event.event_id}'.encode()).hexdigest()[:16]}"
+    """A behavioral cluster aggregating multiple trigger events.
+
+    A cluster represents one (host, time-bucket, constructor) group. It
+    records every trigger that fired inside the bucket, accumulates
+    supporting signals, and attaches counter-evidence at finalization.
+    The cluster_id is keyed on (constructor, host, bucket_start) so that
+    re-running the constructor over the same data is idempotent.
+    """
+
+    def __init__(
+        self,
+        constructor_name: str,
+        host_name: str,
+        trigger_event: CanonicalEvent,
+        trigger_name: str,
+        base_score: int,
+        bucket_key: str | None = None,
+        mitre_tactic: str = "",
+        technique_ids: list[str] | None = None,
+    ):
+        bucket_key = bucket_key or trigger_event.event_id
+        self.cluster_id = (
+            "cluster-"
+            + hashlib.sha256(
+                f"{constructor_name}|{host_name}|{bucket_key}".encode()
+            ).hexdigest()[:16]
+        )
         self.constructor_name = constructor_name
         self.host_name = host_name
-        
+
         self.trigger_name = trigger_name
         self.trigger_event = trigger_event
-        
+
         self.base_score = base_score
         self.events: list[CanonicalEvent] = [trigger_event]
-        
+
         self.supporting_signals: list[str] = []
         self.supporting_weights: list[int] = []
-        
+
         self.counter_details: list[dict[str, Any]] = []
         self.counter_weights: list[int] = []
 
         self.score = base_score
         self.tier = get_tier(self.score)
         self.summary = ""
-        
-        # New fields for schema compatibility
+
+        # Schema-compat fields: populated by the runner from Constructor.
         self.triggers_fired: list[str] = [trigger_name]
-        self.mitre_tactic: str = ""
-        self.technique_ids: list[str] = []
+        self.mitre_tactic: str = mitre_tactic
+        self.technique_ids: list[str] = list(technique_ids or [])
         self.time_start: str = trigger_event.timestamp
         self.time_end: str = trigger_event.timestamp
+        self.bucket_key: str = bucket_key
+
+    def add_trigger(self, trigger_name: str, event: CanonicalEvent, base_score: int) -> None:
+        """Record an additional trigger firing within the same cluster bucket.
+
+        Use the higher of (current base_score, new base_score) as the
+        cluster's base — strongest trigger wins. The triggers_fired list
+        accumulates uniquely so we don't over-count the same trigger.
+        """
+        self.add_event(event)
+        if trigger_name not in self.triggers_fired:
+            self.triggers_fired.append(trigger_name)
+        if base_score > self.base_score:
+            self.base_score = base_score
+            self._recalculate()
 
     def add_event(self, event: CanonicalEvent) -> None:
         """Add a supporting canonical event to this cluster."""
         if not any(e.event_id == event.event_id for e in self.events):
             self.events.append(event)
             # Update temporal bounds
-            if event.timestamp < self.time_start:
+            if event.timestamp and event.timestamp < self.time_start:
                 self.time_start = event.timestamp
-            if event.timestamp > self.time_end:
+            if event.timestamp and event.timestamp > self.time_end:
                 self.time_end = event.timestamp
 
     def add_supporting_signal(self, name: str, weight: int) -> None:
@@ -197,8 +236,45 @@ class Constructor(ABC):
 # Cluster Runner
 # ============================================================
 
+_ANTI_FORENSIC_CONSTRUCTORS = {
+    "LogClearing",
+    "Timestomp",
+    "ShadowDeletion",
+}
+
+
+def _bucket_key(event: CanonicalEvent, window_seconds: int) -> str:
+    """Compute the time-bucket key for grouping events.
+
+    Events that fall within the same `window_seconds` window on the same
+    host land in the same bucket and get folded into one cluster per
+    constructor.
+    """
+    ts = event.timestamp or ""
+    if not ts or window_seconds <= 0:
+        return ts or event.event_id
+    try:
+        from datetime import datetime, timezone
+
+        # Normalize Z suffix
+        norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        epoch = int(dt.timestamp())
+        bucket = epoch - (epoch % window_seconds)
+        return f"{bucket}"
+    except (ValueError, TypeError):
+        return ts
+
+
 def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
-    """Run all 12 constructors over the canonical data for a case.
+    """Run all constructors over the canonical data for a case.
+
+    Aggregates events by (constructor, host, time-bucket): all triggers
+    firing within the same window on the same host produce ONE cluster
+    that records every trigger fired and every member event. This matches
+    docs/CONSTRUCTORS.md § 1 (cluster grouping rules).
 
     Args:
         client: NightEyeOSClient
@@ -208,8 +284,8 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
     Returns:
         Statistics dict
     """
-    from nighteye.constructors import ALL_CONSTRUCTORS
     from nighteye.canonical.engine import normalize_document
+    from nighteye.constructors import ALL_CONSTRUCTORS
 
     stats = {
         "constructors_run": 0,
@@ -218,57 +294,94 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
         "anti_forensic": 0,
     }
 
-    # Instantiate all constructors
     constructors = [C() for C in ALL_CONSTRUCTORS]
     stats["constructors_run"] = len(constructors)
 
-    # Find all canonical indices for this case
+    # Per-(constructor, host, bucket) cluster accumulator.
+    # Key: (constructor.name, host_name, bucket_key) -> Cluster
+    cluster_index: dict[tuple[str, str, str], Cluster] = {}
+    # Per-host event reservoir for supporting-signal context
+    events_by_host: dict[str, list[CanonicalEvent]] = {}
+
     canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
 
     for index_name in canonical_indices:
         logger.info("Running behavioral clustering on %s", index_name)
-
         try:
-            # Scroll through all canonical events
             for page in client.scroll_search_iter(
                 index=index_name,
                 query={"match_all": {}},
                 page_size=1000,
             ):
-                events = []
+                events: list[CanonicalEvent] = []
                 for doc in page:
-                    event = normalize_document(doc, case_id)
-                    if event:
-                        events.append(event)
-
+                    ev = normalize_document(doc, case_id)
+                    if ev:
+                        events.append(ev)
                 if not events:
                     continue
 
-                # Run each constructor over the events
+                for ev in events:
+                    if ev.host_name:
+                        events_by_host.setdefault(ev.host_name, []).append(ev)
+
+                # Score each event against each constructor's triggers.
                 for constructor in constructors:
-                    for event in events:
-                        # 1. Check for triggers
-                        new_clusters = constructor.evaluate_event(event)
-                        for cluster in new_clusters:
-                            # 2. Apply signals from the same host context
-                            # (In a real implementation, we'd use a larger time window)
-                            constructor.apply_supporting_signals(cluster, events)
-
-                            # 3. Apply counter-evidence (DB lookup)
-                            constructor.apply_counter_evidence(cluster)
-
-                            # 4. Finalize
-                            constructor.generate_summary(cluster)
-                            save_cluster(db_path, case_id, cluster)
-
-                            stats["clusters_created"] += 1
-                            if cluster.score >= 70:
-                                stats["high_confidence"] += 1
-                            if "anti-forensic" in cluster.constructor_name.lower():
-                                stats["anti_forensic"] += 1
+                    window = getattr(constructor, "grouping_window_seconds", 1800)
+                    for ev in events:
+                        for trigger in constructor.triggers:
+                            if not trigger.evaluate(ev):
+                                continue
+                            host = ev.host_name or "unknown-host"
+                            bkey = _bucket_key(ev, window)
+                            ck = (constructor.name, host, bkey)
+                            cluster = cluster_index.get(ck)
+                            if cluster is None:
+                                cluster = Cluster(
+                                    constructor_name=constructor.name,
+                                    host_name=host,
+                                    trigger_event=ev,
+                                    trigger_name=trigger.name,
+                                    base_score=trigger.base_score,
+                                    bucket_key=bkey,
+                                    mitre_tactic=getattr(constructor, "mitre_tactic", ""),
+                                    technique_ids=list(
+                                        getattr(constructor, "mitre_techniques", [])
+                                    ),
+                                )
+                                cluster_index[ck] = cluster
+                            else:
+                                cluster.add_trigger(
+                                    trigger.name, ev, trigger.base_score
+                                )
 
         except Exception as exc:
             logger.error("Clustering failed for index %s: %s", index_name, exc)
+
+    # Finalize: apply supporting signals (per-host reservoir) and
+    # counter-evidence, generate summary, and persist.
+    for (constructor_name, host, _bkey), cluster in cluster_index.items():
+        constructor = next(
+            (c for c in constructors if c.name == constructor_name),
+            None,
+        )
+        if constructor is None:
+            continue
+        try:
+            host_events = events_by_host.get(host, [])
+            constructor.apply_supporting_signals(cluster, host_events)
+            constructor.apply_counter_evidence(cluster)
+            constructor.generate_summary(cluster)
+            save_cluster(db_path, case_id, cluster)
+            stats["clusters_created"] += 1
+            if cluster.score >= 70:
+                stats["high_confidence"] += 1
+            if cluster.constructor_name in _ANTI_FORENSIC_CONSTRUCTORS:
+                stats["anti_forensic"] += 1
+        except Exception as exc:
+            logger.error(
+                "Cluster finalization failed for %s: %s", cluster.cluster_id, exc
+            )
 
     return stats
 

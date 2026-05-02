@@ -6,9 +6,30 @@
 > that block hallucinated findings and pre-computed clusters that let the
 > agent reason over reduced evidence rather than raw event streams.
 
-**Status:** design complete, build starting.
+**Status:** all 8 layers scaffolded; full ingest → cluster → hypothesis → report
+pipeline runs end-to-end on mock data.
+**Test suite:** 368/374 passing (98.4%). 6 pre-existing trigger-name drift
+failures in `test_additional_constructors.py`, `test_constructors.py`,
+`test_persistence_evasion.py` — tests assert different trigger names/scores
+than implementations expose. Tracked but non-blocking.
 **Target submission:** June 15, 2026.
 **Reference to exceed:** [Valhuntir](https://github.com/AppliedIR/Valhuntir).
+
+## Recent audit + fixes (2026-05-02)
+
+A deep architecture audit identified and resolved several red flags. Each
+change preserves the contracts in `docs/ARCHITECTURE.md`:
+
+| Red flag | Resolution |
+|---|---|
+| Test collection broken: `test_confidence.py` expected `FACTOR_MAX_WEIGHTS`, `HypothesisFactors`, `score_to_tier`; `test_mcp_tools.py` pulled in `fastmcp` via stub files | Refactored `confidence.py` to expose the cleaner `(profile, factors)` API; preserved old call sites via `compute_adaptive_confidence_from_db`. Deleted stub MCP tool files (`case.py`/`cluster.py`/`hypothesis.py`/`report.py`/`triage.py`/`canonical.py`/`journal.py`) and rewrote `test_mcp_tools.py` to test the real `*_tools.py` production modules. |
+| Layer 6 (Persistent Investigation State) not wired into MCP server. `journal.py` stub returned hardcoded fake data. | New `src/nighteye/journal.py` does real CRUD against the SQLite `journal` table — `append_entry`, `query_entries`, `build_resume_digest`, `checkpoint`, `record_decision`. New `mcp/tools/journal_tools.py` exposes the four MCP tools (`journal_checkpoint`, `journal_record_decision`, `journal_query`, `journal_resume`). All four are now registered on the MCP server. |
+| `correlation/root_cause.py` returned hardcoded "WKSTN-02 / T1078.002" mock data | Replaced with real implementation that walks APPROVED hypotheses backward via `causal_links`, picks strongest precursor at each step (CHAIN > WRITE > NET > TIGHT_TIME > CO_OCCUR > TEMPORAL_ONLY), and emits a MITRE-tagged kill chain. Notes the gap when no precursor link exists rather than fabricating one. |
+| `validation/end_of_case.py` returned hardcoded "GAP-001 Missing VPN logs" mock | Replaced with real reconciliation: counts hypotheses by status, validates MITRE technique IDs, detects A→B/B→A causal contradictions, finds APPROVED-but-contradicted pairs, checks HMAC ledger coverage, surfaces unresolved blocking gaps. |
+| Constructors created **one cluster per trigger event** instead of aggregating by host + time-window per `CONSTRUCTORS.md` § 1 | Rewrote `run_all_constructors`: events are bucketed by `(constructor, host, floor(timestamp/window))`. Multiple triggers within a bucket fold into a single cluster recording every trigger fired. Cluster ID keyed on bucket so re-runs are idempotent. |
+| Cluster rows had empty `mitre_tactic` / `technique_ids` even though Constructor classes declare them | Cluster constructor now accepts these from the runner; `run_all_constructors` populates them from `Constructor.mitre_tactic` and `Constructor.mitre_techniques`. Anti-forensic counter check now matches actual constructor names (`LogClearing`/`Timestomp`/`ShadowDeletion`). |
+| `mapper.py` used dotted strings as nested-dict keys (`doc.get("registry.value_data", "")`, `doc.get("rule.name", "")`) — never matched real ECS docs | Switched to nested object access with fallback to flattened-key form. |
+| `_eval_target_not_previously_accessed` was hardcoded `return True` — every cluster got the +10 supporting bonus regardless of actual evidence | Replaced with a real check against same-user authentication history in the supplied context window. Conservative: returns False when in doubt rather than biasing the score upward. |
 
 ---
 

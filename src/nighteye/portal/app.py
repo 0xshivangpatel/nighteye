@@ -116,7 +116,7 @@ def create_portal_app(
                 # Get top clusters
                 top_clusters = conn.execute(
                     """
-                    SELECT cluster_id, constructor_name, host, score, strength, summary
+                    SELECT cluster_id, cluster_type, primary_host, score, strength, summary
                     FROM clusters WHERE case_id = ? ORDER BY score DESC LIMIT 10
                     """,
                     (case_id,),
@@ -138,9 +138,10 @@ def create_portal_app(
             top_clusters = []
             recent_hypotheses = []
 
+        active_case = get_active_case()
         return templates.TemplateResponse("index.html", {
             "request": request,
-            "case": dict(case_row) if case_row else {},
+            "case": active_case.__dict__ if active_case else {},
             "stats": {
                 "clusters": clusters,
                 "hypotheses": hypotheses,
@@ -160,8 +161,8 @@ def create_portal_app(
             with _get_db() as conn:
                 rows = conn.execute(
                     """
-                    SELECT cluster_id, constructor_name, host, score, strength, 
-                           status, trigger_name, trigger_event_timestamp, summary, created_at
+                    SELECT cluster_id, cluster_type, primary_host, score, strength, 
+                           time_start, summary, created_at
                     FROM clusters WHERE case_id = ?
                     ORDER BY score DESC
                     """,
@@ -278,7 +279,7 @@ def create_portal_app(
                 # Get related clusters
                 related_clusters = conn.execute(
                     """
-                    SELECT cluster_id, constructor_name, summary, score
+                    SELECT cluster_id, cluster_type, summary, score
                     FROM clusters WHERE cluster_id IN (
                         SELECT suggested_by_cluster FROM hypotheses WHERE hypothesis_id = ?
                     )
@@ -377,15 +378,32 @@ def create_portal_app(
                         except (json.JSONDecodeError, TypeError):
                             pass
                     links.append(l)
+
+                # Generate Mermaid code
+                mermaid_lines = ["flowchart LR"]
+                # Add nodes
+                for node in nodes:
+                    # Escape characters for Mermaid
+                    label = node["canonical_key"].replace('"', "'")
+                    mermaid_lines.append(f'    {node["entity_id"]}["{node["entity_type"]}: {label}"]')
+                
+                # Add edges
+                for link in links:
+                    mermaid_lines.append(f'    {link["from_entity"]} -->|{link["edge_type"]}| {link["to_entity"]}')
+                
+                mermaid_graph = "\n".join(mermaid_lines)
+
         except Exception as exc:
             logger.warning("Failed to load graph: %s", exc)
             nodes = []
             links = []
+            mermaid_graph = "flowchart LR\n    Empty[No data available]"
 
         return templates.TemplateResponse("graph.html", {
             "request": request,
             "nodes": nodes,
             "links": links,
+            "mermaid_graph": mermaid_graph,
         })
 
     @app.get("/disturbances", response_class=HTMLResponse)
