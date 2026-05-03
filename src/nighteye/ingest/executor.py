@@ -165,6 +165,9 @@ def execute_ingest_plan(
             except Exception as e:
                 logger.debug("Force merge failed on %s: %s", idx, e)
 
+    # Post-ingest YARA scan against extracted filesystem evidence
+    _run_yara_phase(client, plan, result)
+
     result.duration_s = time.time() - start_time
     
     logger.info(
@@ -175,6 +178,63 @@ def execute_ingest_plan(
     )
     
     return result
+
+
+def _run_yara_phase(
+    client: NightEyeOSClient, plan: IngestPlan, result: IngestResult
+) -> None:
+    """Post-ingest YARA scan against extracted evidence directories."""
+    from nighteye.ingest.yara import is_yara_available, run_yara
+
+    if not is_yara_available():
+        return
+
+    yara_index = f"case-{plan.case_id.lower()}-yara-alerts"
+    yara_hosts: set[str] = set()
+
+    for group in plan.groups:
+        host = group.host
+        for evidence in group.files:
+            scan_path = evidence.path
+            if not scan_path.exists():
+                continue
+            # Only scan extracted directories, not individual files
+            target = scan_path.parent if scan_path.is_file() else scan_path
+            if not target.is_dir():
+                continue
+            if host in yara_hosts:
+                continue  # One scan per host is enough
+            yara_hosts.add(host)
+
+            logger.info("Running YARA malware scan for host %s...", host)
+            try:
+                client.set_refresh_interval(yara_index, "-1")
+            except Exception:
+                pass
+
+            doc_stream = run_yara(target, host_name=host, case_id=plan.case_id)
+            yara_docs = list(doc_stream)
+            if yara_docs:
+                try:
+                    indexed, errors = client.bulk_index_iter(
+                        index_name=yara_index, documents=yara_docs,
+                    )
+                    result.total_docs_indexed += indexed
+                    result.total_errors += errors
+                    logger.info(
+                        "YARA: %d matches indexed for %s (%d errors)",
+                        indexed, host, errors,
+                    )
+                except Exception as exc:
+                    logger.warning("YARA bulk indexing failed for %s: %s", host, exc)
+            else:
+                logger.debug("YARA: no matches for %s", host)
+
+            try:
+                client.set_refresh_interval(yara_index, "1s")
+            except Exception:
+                pass
+            break  # Only scan first host for now (scanning all would take hours)
 
 
 def _stream_directory(
