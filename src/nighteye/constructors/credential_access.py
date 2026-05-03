@@ -36,15 +36,52 @@ def _is_lsass_access(event: CanonicalEvent) -> bool:
         return "lsass" in name or "credential dump" in name or "mimikatz" in name
     return False
 
+_HIVE_BASENAMES = frozenset({
+    "sam", "system", "security", "software",
+    "sam.save", "system.save", "security.save", "software.save",
+    "sam.hive", "system.hive", "security.hive", "software.hive",
+    "sam.bak", "system.bak", "security.bak", "software.bak",
+    "sam.old", "system.old", "security.old", "software.old",
+})
+
+
+def _path_basename(path: str) -> str:
+    """Return the file basename for either Windows or POSIX paths."""
+    if not path:
+        return ""
+    p = path.lower().replace("\\", "/")
+    return p.rsplit("/", 1)[-1]
+
+
 def _is_sam_hive_copy(event: CanonicalEvent) -> bool:
-    """Detect SAM/SYSTEM/SECURITY hive copy."""
+    """Detect SAM/SYSTEM/SECURITY hive copy.
+
+    Tight matching:
+      - FILE_CREATION: basename must be exactly one of the registry hive
+        files (with optional .save/.hive/.bak/.old suffix). Substring
+        matching on path explodes false positives because "sam" matches
+        "samples", "samba", "username", etc., and ``system`` + ``config``
+        appear in every path under ``\\Windows\\System32\\``.
+      - PROCESS_EXECUTION: command line must invoke ``reg save`` or
+        ``ntds.dit`` extraction tooling.
+      - ALERT: explicit hive-related alert name.
+    """
     if event.canonical_type == CanonicalType.FILE_CREATION:
-        path = event.target_file.lower()
-        hive_names = ["sam", "system", "security", "software"]
-        return any(hive in path for hive in hive_names) and ("config" in path or ".save" in path or ".hive" in path)
+        basename = _path_basename(event.target_file)
+        if basename in _HIVE_BASENAMES:
+            return True
+        # Allow "ntds.dit" extraction copies as well.
+        return basename in ("ntds.dit", "ntds.dit.save", "ntds.dit.bak")
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
         cmd = event.command_line.lower()
-        return any(kw in cmd for kw in ["reg save", "sam", "security", "ntds.dit"])
+        # Tight cmdline matching — must look like an actual save/copy.
+        if "reg save" in cmd or "reg.exe save" in cmd:
+            return True
+        if "ntds.dit" in cmd or "ntdsutil" in cmd:
+            return True
+        if "vssadmin" in cmd and "create" in cmd and "shadow" in cmd:
+            return True
+        return False
     if event.canonical_type == CanonicalType.ALERT:
         name = event.alert_name.lower()
         return "sam hive" in name or "registry hive" in name

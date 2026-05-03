@@ -50,9 +50,8 @@ _EVENT_ID_TO_CANONICAL: dict[str, CanonicalType] = {
     "4648": CanonicalType.AUTHENTICATION,
     "4672": CanonicalType.AUTHENTICATION,
 
-    # LSASS / Credential Access
-    "4663": CanonicalType.LSASS_ACCESS,  # Object access — detect LSASS targeting via context
-    "4656": CanonicalType.LSASS_ACCESS,  # Handle requested to LSASS
+    # Auth / LSASS context (only use LSASS_ACCESS when safe to infer from context)
+    "4656": CanonicalType.LSASS_ACCESS,  # Handle requested — often targets LSASS
     "4769": CanonicalType.TICKET_REQUEST,  # Kerberos TGS request
     "4934": CanonicalType.REPLICATION,  # AD replication
     "4935": CanonicalType.REPLICATION,  # AD replication failure
@@ -60,6 +59,7 @@ _EVENT_ID_TO_CANONICAL: dict[str, CanonicalType] = {
     "104": CanonicalType.LOG_CLEARED,  # Event log cleared
 
     # File operations
+    "4663": CanonicalType.FILE_MODIFICATION,  # Object access — generic, not LSASS-specific
     "11": CanonicalType.FILE_CREATION,  # Sysmon file create
     "23": CanonicalType.FILE_DELETION,  # Sysmon file delete
 
@@ -93,7 +93,7 @@ _ACTION_TO_CANONICAL: dict[str, CanonicalType] = {
     "scheduled-task-created": CanonicalType.SCHEDULED_TASK,
     "network-connection-allowed": CanonicalType.NETWORK_CONNECTION,
     "network-connection-blocked": CanonicalType.NETWORK_CONNECTION,
-    "object-access-attempt": CanonicalType.LSASS_ACCESS,
+    "object-access-attempt": CanonicalType.FILE_MODIFICATION,
     "object-deleted": CanonicalType.FILE_DELETION,
     "registry-key-modified": CanonicalType.REGISTRY_MODIFICATION,
     "script-block-logged": CanonicalType.PROCESS_EXECUTION,
