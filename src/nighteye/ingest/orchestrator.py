@@ -266,6 +266,19 @@ def _is_host_like(name: str) -> bool:
     if lower in _NON_HOST_DIRS:
         return False
 
+    # Skip names that look like hashes or random IDs (8+ chars, no vowels)
+    # e.g., "jsp1gs76nm", "afd4ed01", "k0j8v8o5n1"
+    if len(name) >= 8:
+        vowels = set("aeiou")
+        letter_chars = [c for c in lower if c.isalpha()]
+        if len(letter_chars) >= 4 and not any(c in vowels for c in letter_chars):
+            return False
+
+    # Skip names that are pure hex or hex-like
+    import re as _re
+    if _re.match(r'^[0-9a-f]{6,}$', lower):
+        return False
+
     # Check against known host patterns
     for pattern in _HOST_DIR_PATTERNS:
         if pattern.match(name):
@@ -275,8 +288,13 @@ def _is_host_like(name: str) -> bool:
     if 2 <= len(name) <= 20:
         has_alpha = any(c.isalpha() for c in name)
         has_digit = any(c.isdigit() for c in name)
-        if has_alpha and has_digit and re.match(r'^[\w-]+$', name):
-            return True
+        if has_alpha and has_digit and _re.match(r'^[\w-]+$', name):
+            # Require at least one vowel for English-like names
+            if any(c in "aeiou" for c in lower if c.isalpha()):
+                return True
+            # Allow common host patterns without vowels: DC-01, SRV-02
+            if _re.match(r'^(?:DC|SRV|PC|WKSTN|WS|HOST|SERVER|IMG|VM)[-_]?\d*', name, re.I):
+                return True
 
     return False
 

@@ -114,9 +114,6 @@ def execute_ingest_plan(
         )
 
         try:
-            # Disable refresh interval for this index to maximize throughput
-            client.set_refresh_interval(group.index_name, "-1")
-
             # Stream all files in this group into a single bulk ingest
             doc_stream = _stream_group_docs(group, plan.case_id, group_pbar)
 
@@ -124,6 +121,13 @@ def execute_ingest_plan(
                 index_name=group.index_name,
                 documents=doc_stream,
             )
+
+            # Disable refresh during bulk indexing (only after index exists)
+            if success_count > 0:
+                try:
+                    client.set_refresh_interval(group.index_name, "-1")
+                except Exception:
+                    pass
 
             group.doc_count = success_count
             result.total_docs_indexed += success_count
@@ -149,14 +153,13 @@ def execute_ingest_plan(
             group.error = str(exc)
             result.groups_failed += 1
             logger.error("Group %s failed: %s", group.host, exc, exc_info=True)
-            # Reset shard breaker so downstream groups can try
             client.reset_breaker()
         finally:
             # Re-enable standard refresh interval (1s) and record duration
             try:
                 client.set_refresh_interval(group.index_name, "1s")
-            except Exception as e:
-                logger.debug("Failed to reset refresh interval for %s: %s", group.index_name, e)
+            except Exception:
+                pass
 
             group.duration_ms = int((time.time() - group_start) * 1000)
 
