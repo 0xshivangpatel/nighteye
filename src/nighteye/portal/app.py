@@ -355,31 +355,141 @@ def create_portal_app(
             "events": events,
         })
 
+    @app.get("/evidence", response_class=HTMLResponse)
+    async def evidence_page(
+        request: Request,
+        canonical_type: str = "",
+        host: str = "",
+        limit: int = 500,
+    ):
+        """Browse ingested canonical events."""
+        try:
+            case_id = _get_case_id()
+            client = _get_client()
+            from nighteye.ingest.ecs import case_index_pattern
+
+            indices = client.list_indices(case_index_pattern(case_id, "canonical-*"))
+            events: list[dict] = []
+            type_counts: dict[str, int] = {}
+            host_counts: dict[str, int] = {}
+
+            for index_name in indices:
+                query: dict = {"match_all": {}}
+                if canonical_type or host:
+                    must: list[dict] = []
+                    if canonical_type:
+                        must.append({"term": {"canonical_type": canonical_type}})
+                    if host:
+                        must.append({"term": {"host_name": host}})
+                    query = {"bool": {"must": must}}
+
+                try:
+                    for page in client.scroll_search_iter(
+                        index=index_name,
+                        query=query,
+                        page_size=1000,
+                    ):
+                        for doc in page:
+                            source = doc.get("_source", doc)
+                            ev = {
+                                "index": index_name,
+                                "event_id": source.get("event_id", ""),
+                                "canonical_type": source.get("canonical_type", "UNKNOWN"),
+                                "host_name": source.get("host_name", "unknown"),
+                                "timestamp": source.get("@timestamp", source.get("timestamp", "")),
+                                "user": source.get("user", ""),
+                                "process_name": source.get("process_name", ""),
+                                "command_line": source.get("command_line", ""),
+                                "target_file": source.get("target_file", ""),
+                                "registry_key": source.get("registry_key", ""),
+                                "remote_ip": source.get("remote_ip", ""),
+                                "alert_name": source.get("alert_name", ""),
+                            }
+                            events.append(ev)
+                            type_counts[ev["canonical_type"]] = type_counts.get(ev["canonical_type"], 0) + 1
+                            host_counts[ev["host_name"]] = host_counts.get(ev["host_name"], 0) + 1
+                            if len(events) >= limit:
+                                break
+                        if len(events) >= limit:
+                            break
+                except Exception as exc:
+                    logger.warning("Failed to query canonical index %s: %s", index_name, exc)
+
+            events.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+        except Exception as exc:
+            logger.warning("Failed to load evidence: %s", exc)
+            events = []
+            type_counts = {}
+            host_counts = {}
+            indices = []
+
+        return templates.TemplateResponse(request, "evidence.html", {
+            "events": events,
+            "type_counts": type_counts,
+            "host_counts": host_counts,
+            "indices": indices,
+            "filter_type": canonical_type,
+            "filter_host": host,
+        })
+
+    @app.get("/indices", response_class=HTMLResponse)
+    async def indices_page(request: Request):
+        """Show OpenSearch indices for this case."""
+        try:
+            case_id = _get_case_id()
+            client = _get_client()
+
+            raw_indices = client.list_case_indices(case_id)
+            index_info: list[dict] = []
+            for info in sorted(raw_indices, key=lambda x: x.get("index", "")):
+                index_info.append({
+                    "name": info.get("index", ""),
+                    "docs": info.get("docs_count", 0),
+                    "size": info.get("size", "0b"),
+                })
+        except Exception as exc:
+            logger.warning("Failed to load indices: %s", exc)
+            index_info = []
+
+        return templates.TemplateResponse(request, "indices.html", {
+            "indices": index_info,
+        })
+
     @app.get("/graph", response_class=HTMLResponse)
-    async def graph_page(request: Request):
+    async def graph_page(request: Request, entity_type: str = ""):
         """Interactive graph visualization page."""
         try:
             case_id = _get_case_id()
             with _get_db() as conn:
-                # Get entities — limit for diagram readability
-                entity_rows = conn.execute(
-                    """
+                # Build entity query with optional filter
+                entity_sql = """
                     SELECT entity_id, entity_type, canonical_key, properties, first_seen, last_seen
                     FROM entities WHERE case_id = ?
-                    LIMIT 100
-                    """,
-                    (case_id,),
-                ).fetchall()
+                """
+                entity_params: list = [case_id]
+                if entity_type:
+                    entity_sql += " AND entity_type = ?"
+                    entity_params.append(entity_type)
+                entity_sql += " LIMIT 100"
 
-                # Get edges
-                edge_rows = conn.execute(
-                    """
-                    SELECT from_entity, to_entity, edge_type, timestamp, properties
-                    FROM edges WHERE case_id = ?
-                    LIMIT 1000
-                    """,
-                    (case_id,),
-                ).fetchall()
+                entity_rows = conn.execute(entity_sql, entity_params).fetchall()
+
+                entity_ids = {r["entity_id"] for r in entity_rows}
+
+                # Get edges for these entities
+                if entity_ids:
+                    placeholders = ",".join("?" * len(entity_ids))
+                    edge_rows = conn.execute(
+                        f"""
+                        SELECT from_entity, to_entity, edge_type, timestamp, properties
+                        FROM edges WHERE case_id = ?
+                        AND (from_entity IN ({placeholders}) OR to_entity IN ({placeholders}))
+                        LIMIT 500
+                        """,
+                        (case_id,) + tuple(entity_ids) + tuple(entity_ids),
+                    ).fetchall()
+                else:
+                    edge_rows = []
 
                 nodes = []
                 for r in entity_rows:
@@ -401,31 +511,51 @@ def create_portal_app(
                             pass
                     links.append(l)
 
-                # Generate Mermaid code
-                mermaid_lines = ["flowchart LR"]
-                # Add nodes
+                # Build Mermaid diagram — grouped by entity_type in subgraphs, TD layout
+                mermaid_lines = ["flowchart TD"]
+                by_type: dict[str, list[dict]] = {}
                 for node in nodes:
-                    # Escape characters for Mermaid syntax safety
-                    label = node["canonical_key"].replace('"', "'").replace("]", "&#93;").replace("[", "&#91;")
-                    safe_id = node["entity_id"].replace('"', "'")
-                    mermaid_lines.append(f'    {safe_id}["{node["entity_type"]}: {label}"]')
-                
-                # Add edges
+                    by_type.setdefault(node["entity_type"], []).append(node)
+
+                for etype, nlist in by_type.items():
+                    safe_etype = etype.replace(" ", "_").replace("-", "_")
+                    mermaid_lines.append(f"    subgraph {safe_etype} [{etype}]")
+                    for node in nlist:
+                        label = node["canonical_key"].replace('"', "'").replace("]", "&#93;").replace("[", "&#91;")
+                        if len(label) > 40:
+                            label = label[:37] + "..."
+                        safe_id = node["entity_id"].replace('"', "'")
+                        mermaid_lines.append(f'        {safe_id}["{label}"]')
+                    mermaid_lines.append("    end")
+
                 for link in links:
-                    mermaid_lines.append(f'    {link["from_entity"]} -->|{link["edge_type"]}| {link["to_entity"]}')
-                
+                    mermaid_lines.append(
+                        f'    {link["from_entity"]} -->|{link["edge_type"]}| {link["to_entity"]}'
+                    )
+
                 mermaid_graph = "\n".join(mermaid_lines)
+
+                # Available entity types for filter dropdown
+                type_rows = conn.execute(
+                    "SELECT DISTINCT entity_type FROM entities WHERE case_id = ?",
+                    (case_id,),
+                ).fetchall()
+                available_types = [r["entity_type"] for r in type_rows]
 
         except Exception as exc:
             logger.warning("Failed to load graph: %s", exc)
             nodes = []
             links = []
-            mermaid_graph = "flowchart LR\n    Empty[No data available]"
+            mermaid_graph = "flowchart TD\n    Empty[No data available]"
+            available_types = []
+            entity_type = ""
 
         return templates.TemplateResponse(request, "graph.html", {
             "nodes": nodes,
             "links": links,
             "mermaid_graph": mermaid_graph,
+            "available_types": available_types,
+            "current_type": entity_type,
         })
 
     @app.get("/disturbances", response_class=HTMLResponse)

@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+
+{% block header %}OpenSearch Indices{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+        <h3 class="font-medium text-gray-700">Case Indices</h3>
+        <span class="text-sm text-gray-500">{{ indices|length }} indices</span>
+    </div>
+    {% if indices %}
+    <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-6 py-3 font-medium text-gray-500">Index Name</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Documents</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Size</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y">
+            {% for idx in indices %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4 font-mono text-xs text-cyan-600">{{ idx.name }}</td>
+                <td class="px-6 py-4">{{ idx.docs }}</td>
+                <td class="px-6 py-4 text-gray-600">{{ idx.size }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="p-8 text-center text-gray-500">
+        <div class="mb-2">No indices found.</div>
+        <div class="text-sm text-gray-400">Ensure ingest has been run and OpenSearch is reachable.</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

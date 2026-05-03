@@ -152,6 +152,28 @@ def _metadata_to_canonical(event_code: str, doc: dict[str, Any]) -> CanonicalTyp
 
     return None
 
+def _get_nested_or_flat(doc: dict[str, Any], *paths: str) -> Any:
+    """Try nested dict access first, then dotted flat keys.
+
+    Examples:
+        _get_nested_or_flat(doc, "host", "name")
+        # tries doc["host"]["name"], then doc.get("host.name")
+    """
+    # Nested path
+    current: Any = doc
+    for part in paths:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            current = None
+            break
+    if current is not None and current != "":
+        return current
+    # Flattened dotted key fallback
+    dotted = ".".join(paths)
+    return doc.get(dotted, "")
+
+
 class CanonicalNormalizer:
     """Converts raw ECS documents to CanonicalEvents."""
 
@@ -296,13 +318,13 @@ class CanonicalNormalizer:
 
     def _extract_host(self, doc: dict[str, Any]) -> str:
         """Extract host name from ECS document."""
-        host = doc.get("host", {}).get("name", "")
+        host = _get_nested_or_flat(doc, "host", "name")
         if not host:
             # Fallback: computer from winlog
-            host = doc.get("winlog", {}).get("computer", "")
+            host = _get_nested_or_flat(doc, "winlog", "computer")
         if not host:
             # Fallback: from source_file path
-            source = doc.get("nighteye", {}).get("source_file", "")
+            source = _get_nested_or_flat(doc, "nighteye", "source_file")
             if source:
                 parts = source.replace("\\", "/").split("/")
                 # Heuristic: look for host-like directory
@@ -315,18 +337,15 @@ class CanonicalNormalizer:
         """Extract and normalize timestamp."""
         # Priority 1: @timestamp field
         ts = doc.get("@timestamp", "")
-        if ts:
-            norm = normalize_timestamp(ts)
-            return norm or ts
-        # Priority 2: ECS @timestamp (nested)
-        ts = doc.get("@timestamp", "")
         if not ts:
             ts = doc.get("_source", {}).get("@timestamp", "")
         if ts:
             norm = normalize_timestamp(ts)
             return norm or ts
-        # Priority 3: file timestamps (from metadata docs, timeline CSVs)
-        file_mtime = doc.get("file", {}).get("mtime") or doc.get("file.mtime")
+        # Priority 2: file timestamps (from metadata docs, timeline CSVs)
+        file_mtime = _get_nested_or_flat(doc, "file", "mtime")
+        if not file_mtime:
+            file_mtime = doc.get("file.mtime")
         if file_mtime:
             try:
                 from datetime import datetime, timezone
@@ -342,23 +361,23 @@ class CanonicalNormalizer:
 
     def _extract_user(self, doc: dict[str, Any]) -> str:
         """Extract user name from ECS document."""
-        user = doc.get("user", {}).get("name", "")
-        domain = doc.get("user", {}).get("domain", "")
+        user = _get_nested_or_flat(doc, "user", "name")
+        domain = _get_nested_or_flat(doc, "user", "domain")
         if domain and user:
             return f"{domain}\\{user}"
         return user or ""
 
     def _extract_process_name(self, doc: dict[str, Any]) -> str:
         """Extract process name."""
-        return doc.get("process", {}).get("name", "")
+        return _get_nested_or_flat(doc, "process", "name")
 
     def _extract_process_path(self, doc: dict[str, Any]) -> str:
         """Extract process executable path."""
-        return doc.get("process", {}).get("executable", "")
+        return _get_nested_or_flat(doc, "process", "executable")
 
     def _extract_pid(self, doc: dict[str, Any]) -> int | None:
         """Extract process PID."""
-        pid = doc.get("process", {}).get("pid")
+        pid = _get_nested_or_flat(doc, "process", "pid")
         if pid is not None:
             try:
                 return int(pid)
@@ -368,28 +387,30 @@ class CanonicalNormalizer:
 
     def _extract_command_line(self, doc: dict[str, Any]) -> str:
         """Extract command line."""
-        return doc.get("process", {}).get("command_line", "")
+        return _get_nested_or_flat(doc, "process", "command_line")
 
     def _extract_file_path(self, doc: dict[str, Any]) -> str:
         """Extract file path from nested or flat ECS fields."""
-        return (doc.get("file", {}).get("path", "")
-                or doc.get("file.path", "")
-                or doc.get("target_file", ""))
+        return (
+            _get_nested_or_flat(doc, "file", "path")
+            or doc.get("file.path", "")
+            or doc.get("target_file", "")
+        )
 
     def _extract_remote_ip(self, doc: dict[str, Any]) -> str:
         """Extract remote IP."""
         # Prefer destination for outbound
-        dst = doc.get("destination", {}).get("ip", "")
+        dst = _get_nested_or_flat(doc, "destination", "ip")
         if dst:
             return dst
         # Fallback to source if no destination
-        return doc.get("source", {}).get("ip", "")
+        return _get_nested_or_flat(doc, "source", "ip")
 
     def _extract_remote_port(self, doc: dict[str, Any]) -> int | None:
         """Extract remote port."""
-        port = doc.get("destination", {}).get("port")
+        port = _get_nested_or_flat(doc, "destination", "port")
         if port is None:
-            port = doc.get("source", {}).get("port")
+            port = _get_nested_or_flat(doc, "source", "port")
         if port is not None:
             try:
                 return int(port)
@@ -399,39 +420,42 @@ class CanonicalNormalizer:
 
     def _extract_registry_key(self, doc: dict[str, Any]) -> str:
         """Extract registry key path."""
-        return doc.get("registry", {}).get("key", "")
+        reg = _get_nested_or_flat(doc, "registry", "key")
+        if not reg:
+            reg = _get_nested_or_flat(doc, "registry", "path")
+        return reg or ""
 
     def _extract_alert_name(self, doc: dict[str, Any]) -> str:
         """Extract alert name from detection engine output."""
         # Hayabusa/Chainsaw
-        rule = doc.get("rule", {}).get("name", "")
+        rule = _get_nested_or_flat(doc, "rule", "name")
         if rule:
             return rule
         # Generic alert
-        return doc.get("alert", {}).get("name", "")
+        return _get_nested_or_flat(doc, "alert", "name")
 
     def _extract_alert_level(self, doc: dict[str, Any]) -> str:
         """Extract alert severity level."""
-        return doc.get("rule", {}).get("level", "") or doc.get("alert", {}).get("level", "")
+        return _get_nested_or_flat(doc, "rule", "level") or _get_nested_or_flat(doc, "alert", "level")
 
     def _extract_key_fields(self, doc: dict[str, Any], canonical_type: CanonicalType) -> str:
         """Extract fields that make this event unique for ID generation."""
         if canonical_type == CanonicalType.PROCESS_EXECUTION:
-            return f"{doc.get('process', {}).get('name', '')}:{doc.get('process', {}).get('pid', '')}"
+            return f"{_get_nested_or_flat(doc, 'process', 'name')}:{_get_nested_or_flat(doc, 'process', 'pid')}"
         elif canonical_type == CanonicalType.AUTHENTICATION:
-            return f"{doc.get('user', {}).get('name', '')}:{doc.get('source', {}).get('ip', '')}"
+            return f"{_get_nested_or_flat(doc, 'user', 'name')}:{_get_nested_or_flat(doc, 'source', 'ip')}"
         elif canonical_type == CanonicalType.NETWORK_CONNECTION:
-            return f"{doc.get('source', {}).get('ip', '')}:{doc.get('destination', {}).get('ip', '')}:{doc.get('destination', {}).get('port', '')}"
+            return f"{_get_nested_or_flat(doc, 'source', 'ip')}:{_get_nested_or_flat(doc, 'destination', 'ip')}:{_get_nested_or_flat(doc, 'destination', 'port')}"
         elif canonical_type == CanonicalType.FILE_CREATION:
-            return doc.get("file", {}).get("path", "")
+            return _get_nested_or_flat(doc, "file", "path")
         elif canonical_type == CanonicalType.REGISTRY_MODIFICATION:
-            return doc.get("registry", {}).get("key", "")
+            return _get_nested_or_flat(doc, "registry", "key")
         elif canonical_type == CanonicalType.SERVICE_INSTALLATION:
-            return doc.get("service", {}).get("name", "")
+            return _get_nested_or_flat(doc, "service", "name")
         elif canonical_type == CanonicalType.SCHEDULED_TASK:
-            return doc.get("task", {}).get("name", "")
+            return _get_nested_or_flat(doc, "task", "name")
         elif canonical_type == CanonicalType.ALERT:
-            return doc.get("rule", {}).get("name", "")
+            return _get_nested_or_flat(doc, "rule", "name")
         return ""
 
 

@@ -1,99 +1,151 @@
 {% extends "layout.html" %}
 
-{% block header %}Cluster Detail: {{ cluster.id }}{% endblock %}
+{% block header %}Cluster Detail: {{ cluster.cluster_id }}{% endblock %}
 
 {% block content %}
 <div class="mb-4 flex items-center justify-between">
     <div>
-        <h2 class="text-xl font-semibold text-gray-800">{{ cluster.type }} on {{ cluster.host }}</h2>
+        <h2 class="text-xl font-semibold text-gray-800">{{ cluster.cluster_type }} on {{ cluster.primary_host }}</h2>
         <p class="text-sm text-gray-500 mt-1">{{ cluster.summary }}</p>
     </div>
     <div class="text-right">
-        {% if cluster.tier == 'STRONG' %}
-        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-bold">Tier: {{ cluster.tier }}</span>
-        {% elif cluster.tier == 'MODERATE' %}
-        <span class="px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-sm font-bold">Tier: {{ cluster.tier }}</span>
+        {% if cluster.strength == 'STRONG' %}
+        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-bold">Tier: {{ cluster.strength }}</span>
+        {% elif cluster.strength == 'MODERATE' %}
+        <span class="px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-sm font-bold">Tier: {{ cluster.strength }}</span>
         {% else %}
-        <span class="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-bold">Tier: {{ cluster.tier }}</span>
+        <span class="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-bold">Tier: {{ cluster.strength }}</span>
         {% endif %}
         <div class="text-sm font-medium text-gray-600 mt-1">Score: {{ cluster.score }}/100</div>
     </div>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mb-6">
-    <div class="border-b border-gray-200">
-        <nav class="-mb-px flex" aria-label="Tabs">
-            <a href="#" class="border-indigo-500 text-indigo-600 w-1/2 py-4 px-1 text-center border-b-2 font-medium text-sm">
-                Timeline Reconstruction
-            </a>
-            <a href="#artifacts" class="border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 w-1/2 py-4 px-1 text-center border-b-2 font-medium text-sm">
-                Recovered Artifacts
-            </a>
-        </nav>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+        <div class="p-4 border-b bg-gray-50">
+            <h3 class="font-medium text-gray-700">Trigger Events</h3>
+        </div>
+        <div class="p-4">
+            {% if cluster.trigger_event %}
+            <div class="text-sm text-gray-600 space-y-2">
+                <div><span class="font-medium">Trigger:</span> {{ cluster.trigger_name }}</div>
+                <div><span class="font-medium">Type:</span> {{ cluster.trigger_event.canonical_type if cluster.trigger_event.canonical_type else cluster.trigger_event.get('canonical_type','') }}</div>
+                <div><span class="font-medium">Time:</span> {{ cluster.trigger_event.timestamp if cluster.trigger_event.timestamp else cluster.trigger_event.get('@timestamp','') }}</div>
+                <div><span class="font-medium">User:</span> {{ cluster.trigger_event.user if cluster.trigger_event.user else cluster.trigger_event.get('user','unknown') }}</div>
+                {% if cluster.trigger_event.process_name or cluster.trigger_event.get('process_name') %}
+                <div><span class="font-medium">Process:</span> {{ cluster.trigger_event.process_name if cluster.trigger_event.process_name else cluster.trigger_event.get('process_name','') }}</div>
+                {% endif %}
+                {% if cluster.trigger_event.command_line or cluster.trigger_event.get('command_line') %}
+                <div><span class="font-medium">Cmdline:</span> <code class="text-xs bg-gray-100 px-1 rounded">{{ cluster.trigger_event.command_line if cluster.trigger_event.command_line else cluster.trigger_event.get('command_line','') }}</code></div>
+                {% endif %}
+                {% if cluster.trigger_event.target_file or cluster.trigger_event.get('target_file') %}
+                <div><span class="font-medium">File:</span> <code class="text-xs bg-gray-100 px-1 rounded">{{ cluster.trigger_event.target_file if cluster.trigger_event.target_file else cluster.trigger_event.get('target_file','') }}</code></div>
+                {% endif %}
+                {% if cluster.trigger_event.registry_key or cluster.trigger_event.get('registry_key') %}
+                <div><span class="font-medium">Registry:</span> <code class="text-xs bg-gray-100 px-1 rounded">{{ cluster.trigger_event.registry_key if cluster.trigger_event.registry_key else cluster.trigger_event.get('registry_key','') }}</code></div>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="text-gray-400 italic text-sm">No trigger event details available.</div>
+            {% endif %}
+        </div>
     </div>
-    
-    <div class="p-6">
-        <h3 class="text-lg font-medium text-gray-900 mb-4">Event Sequence</h3>
-        <div class="flow-root">
-            <ul role="list" class="-mb-8">
-                {% for event in cluster.timeline %}
-                <li>
-                    <div class="relative pb-8">
-                        {% if not loop.last %}
-                        <span class="absolute top-4 left-4 -ml-px h-full w-0.5 bg-gray-200" aria-hidden="true"></span>
-                        {% endif %}
-                        <div class="relative flex space-x-3">
-                            <div>
-                                <span class="h-8 w-8 rounded-full bg-blue-500 flex items-center justify-center ring-8 ring-white">
-                                    <svg class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                </span>
-                            </div>
-                            <div class="min-w-0 flex-1 pt-1.5 flex justify-between space-x-4">
-                                <div>
-                                    <p class="text-sm text-gray-500">{{ event.event }} <span class="font-medium text-gray-900">[{{ event.type }}]</span></p>
-                                </div>
-                                <div class="text-right text-sm whitespace-nowrap text-gray-500">
-                                    <time datetime="{{ event.time }}">{{ event.time }}</time>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </li>
-                {% endfor %}
-            </ul>
+
+    <div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+        <div class="p-4 border-b bg-gray-50">
+            <h3 class="font-medium text-gray-700">Signals</h3>
+        </div>
+        <div class="p-4">
+            <div class="mb-4">
+                <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Supporting Signals</h4>
+                {% if cluster.supporting_signals %}
+                <ul class="space-y-1">
+                    {% for sig in cluster.supporting_signals %}
+                    <li class="text-sm text-green-700 bg-green-50 px-2 py-1 rounded">{{ sig }}</li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="text-gray-400 italic text-sm">No supporting signals recorded.</div>
+                {% endif %}
+            </div>
+            <div>
+                <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Counter Evidence</h4>
+                {% if cluster.counter_evidence_details %}
+                <ul class="space-y-1">
+                    {% for counter in cluster.counter_evidence_details %}
+                    <li class="text-sm {% if counter.applies %}text-red-700 bg-red-50{% else %}text-gray-600 bg-gray-50{% endif %} px-2 py-1 rounded">
+                        {{ counter.signal }}{% if counter.applies %} (applies){% endif %}
+                        {% if counter.evidence %} — {{ counter.evidence }}{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <div class="text-gray-400 italic text-sm">No counter-evidence recorded.</div>
+                {% endif %}
+            </div>
         </div>
     </div>
 </div>
 
-<div id="artifacts" class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-    <div class="p-4 border-b bg-gray-50">
-        <h3 class="font-medium text-gray-700">Carved Artifacts (1768.py / bstrings)</h3>
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mb-6">
+    <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+        <h3 class="font-medium text-gray-700">Member Events ({{ cluster.member_events|length if cluster.member_events else 0 }})</h3>
+        <span class="text-xs text-gray-500">Time range: {{ cluster.time_start }} → {{ cluster.time_end }}</span>
     </div>
-    <table class="w-full text-left text-sm">
-        <thead class="bg-gray-50 border-b">
-            <tr>
-                <th class="px-6 py-3 font-medium text-gray-500">Source</th>
-                <th class="px-6 py-3 font-medium text-gray-500">Artifact Type</th>
-                <th class="px-6 py-3 font-medium text-gray-500">Pattern/Category</th>
-                <th class="px-6 py-3 font-medium text-gray-500">Extracted Value</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y">
-            {% for artifact in cluster.artifacts %}
-            <tr class="hover:bg-gray-50">
-                <td class="px-6 py-4 font-mono text-xs text-gray-500">{{ artifact.source }}</td>
-                <td class="px-6 py-4 font-medium">{{ artifact.type }}</td>
-                <td class="px-6 py-4">{{ artifact.pattern }}</td>
-                <td class="px-6 py-4 font-mono text-cyan-600 break-all">{{ artifact.value }}</td>
-            </tr>
-            {% else %}
-            <tr>
-                <td colspan="4" class="px-6 py-4 text-center text-gray-500">No external artifacts or beacons carved for this cluster.</td>
-            </tr>
+    <div class="p-4 max-h-96 overflow-y-auto">
+        {% if cluster.member_events %}
+        <table class="w-full text-left text-sm">
+            <thead class="bg-gray-50 border-b">
+                <tr>
+                    <th class="px-4 py-2 font-medium text-gray-500">Type</th>
+                    <th class="px-4 py-2 font-medium text-gray-500">Time</th>
+                    <th class="px-4 py-2 font-medium text-gray-500">Details</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                {% for evt in cluster.member_events %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-2 text-xs font-medium">{{ evt.canonical_type if evt.canonical_type else evt.get('canonical_type','') }}</td>
+                    <td class="px-4 py-2 text-xs text-gray-500">{{ evt.timestamp if evt.timestamp else evt.get('@timestamp','') }}</td>
+                    <td class="px-4 py-2 text-xs text-gray-600">
+                        {% if evt.process_name or evt.get('process_name') %}
+                        <span class="font-mono">{{ evt.process_name if evt.process_name else evt.get('process_name','') }}</span>
+                        {% endif %}
+                        {% if evt.target_file or evt.get('target_file') %}
+                        <code class="block text-cyan-700">{{ evt.target_file if evt.target_file else evt.get('target_file','') }}</code>
+                        {% endif %}
+                        {% if evt.registry_key or evt.get('registry_key') %}
+                        <code class="block text-purple-700">{{ evt.registry_key if evt.registry_key else evt.get('registry_key','') }}</code>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="text-gray-400 italic text-sm">No member events recorded.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50">
+        <h3 class="font-medium text-gray-700">Related Hypotheses</h3>
+    </div>
+    <div class="p-4">
+        {% if hypotheses %}
+        <ul class="space-y-2">
+            {% for hyp in hypotheses %}
+            <li class="text-sm">
+                <a href="/hypotheses/{{ hyp.hypothesis_id }}" class="text-cyan-600 hover:underline font-mono">{{ hyp.hypothesis_id }}</a>
+                <span class="text-gray-700">{{ hyp.title }}</span>
+                <span class="text-xs px-2 py-0.5 rounded {% if hyp.status == 'APPROVED' %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-600{% endif %}">{{ hyp.status }}</span>
+            </li>
             {% endfor %}
-        </tbody>
-    </table>
+        </ul>
+        {% else %}
+        <div class="text-gray-400 italic text-sm">No hypotheses linked to this cluster yet.</div>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}

@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+
+{% block header %}Evidence Gaps{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+        <h3 class="font-medium text-gray-700">Open Evidence Gaps</h3>
+        <span class="text-sm text-gray-500">{{ gaps|length }} open</span>
+    </div>
+    {% if gaps %}
+    <div class="divide-y">
+        {% for gap in gaps %}
+        <div class="p-6 hover:bg-gray-50">
+            <div class="flex justify-between items-start mb-2">
+                <span class="font-mono text-xs text-cyan-600">{{ gap.gap_id }}</span>
+                <span class="text-xs text-gray-400">{{ gap.registered_at }}</span>
+            </div>
+            <p class="text-sm text-gray-800 font-medium mb-1">{{ gap.question }}</p>
+            <p class="text-sm text-gray-600">What would resolve: {{ gap.what_would_resolve }}</p>
+            {% if gap.blocks_hypothesis %}
+            <p class="text-xs text-red-600 mt-2">Blocks hypothesis: {{ gap.blocks_hypothesis }}</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="p-8 text-center text-gray-500">
+        <div class="mb-2">No open evidence gaps.</div>
+        <div class="text-sm text-gray-400">Evidence gaps are registered by the agent when it cannot reach a conclusion.<br>They block report generation until resolved.</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

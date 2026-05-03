@@ -16,8 +16,8 @@
         </thead>
         <tbody class="divide-y">
             {% for hyp in hypotheses %}
-            <tr class="hover:bg-gray-50 cursor-pointer">
-                <td class="px-6 py-4 font-mono text-cyan-600">{{ hyp.id }}</td>
+            <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/hypotheses/{{ hyp.hypothesis_id }}'">
+                <td class="px-6 py-4 font-mono text-cyan-600">{{ hyp.hypothesis_id }}</td>
                 <td class="px-6 py-4">
                     {% if hyp.status == 'APPROVED' %}
                     <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-semibold">APPROVED</span>
@@ -26,10 +26,17 @@
                     {% endif %}
                 </td>
                 <td class="px-6 py-4">
-                    <span class="px-2 py-1 bg-slate-100 text-slate-800 rounded text-xs font-semibold">{{ hyp.tier }}</span>
+                    <span class="px-2 py-1 bg-slate-100 text-slate-800 rounded text-xs font-semibold">{{ hyp.confidence_tier }}</span>
                 </td>
                 <td class="px-6 py-4 font-medium">{{ hyp.title }}</td>
-                <td class="px-6 py-4 font-mono text-xs text-gray-500">{{ hyp.techniques | join(", ") }}</td>
+                <td class="px-6 py-4 font-mono text-xs text-gray-500">{{ hyp.technique_ids | join(", ") if hyp.technique_ids else "" }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="5" class="px-6 py-8 text-center text-gray-500">
+                    <div class="mb-2">No hypotheses found.</div>
+                    <div class="text-sm text-gray-400">Hypotheses are created during the AI investigation phase (Layer 5), not during ingest.<br>Run the investigation agent or use MCP tools to generate hypotheses from clusters.</div>
+                </td>
             </tr>
             {% endfor %}
         </tbody>

@@ -10,13 +10,83 @@
 {% endblock %}
 
 {% block content %}
-<div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100 mb-8">
-    <h3 class="text-gray-800 text-lg font-semibold mb-4">Entity Relationships</h3>
-    
-    <div class="border rounded-lg bg-gray-50 p-8 flex justify-center items-center min-h-[400px]">
-        <pre class="mermaid">
-            {{ mermaid_graph }}
+<div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100 mb-6">
+    <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+        <h3 class="text-gray-800 text-lg font-semibold">Entity Relationships</h3>
+        <form method="get" class="flex items-center gap-2">
+            <label class="text-sm text-gray-600">Filter by type:</label>
+            <select name="entity_type" class="text-sm border-gray-300 rounded px-2 py-1 border" onchange="this.form.submit()">
+                <option value="">All Types</option>
+                {% for t in available_types %}
+                <option value="{{ t }}" {% if t == current_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+    <div class="text-sm text-gray-500 mb-4">
+        Showing {{ nodes|length }} nodes and {{ links|length }} edges.
+        {% if current_type %}Filtered to <strong>{{ current_type }}</strong> entities.{% endif %}
+    </div>
+    <div class="border rounded-lg bg-gray-50 p-4 overflow-auto" style="max-height: 70vh;">
+        <pre class="mermaid text-sm">
+{{ mermaid_graph }}
         </pre>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h4 class="text-gray-800 font-semibold mb-3">Nodes ({{ nodes|length }})</h4>
+        {% if nodes %}
+        <div class="overflow-auto max-h-64">
+            <table class="w-full text-left text-xs">
+                <thead class="bg-gray-50 border-b">
+                    <tr>
+                        <th class="px-3 py-2 font-medium text-gray-500">Type</th>
+                        <th class="px-3 py-2 font-medium text-gray-500">Key</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for node in nodes %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-3 py-2 font-medium">{{ node.entity_type }}</td>
+                        <td class="px-3 py-2 text-gray-600 font-mono">{{ node.canonical_key[:60] }}{% if node.canonical_key|length > 60 %}...{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-gray-400 italic text-sm">No entities found.</div>
+        {% endif %}
+    </div>
+
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h4 class="text-gray-800 font-semibold mb-3">Edges ({{ links|length }})</h4>
+        {% if links %}
+        <div class="overflow-auto max-h-64">
+            <table class="w-full text-left text-xs">
+                <thead class="bg-gray-50 border-b">
+                    <tr>
+                        <th class="px-3 py-2 font-medium text-gray-500">Type</th>
+                        <th class="px-3 py-2 font-medium text-gray-500">From</th>
+                        <th class="px-3 py-2 font-medium text-gray-500">To</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    {% for link in links %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-3 py-2 font-medium">{{ link.edge_type }}</td>
+                        <td class="px-3 py-2 text-gray-600 font-mono">{{ link.from_entity[:16] }}...</td>
+                        <td class="px-3 py-2 text-gray-600 font-mono">{{ link.to_entity[:16] }}...</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-gray-400 italic text-sm">No edges found.</div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

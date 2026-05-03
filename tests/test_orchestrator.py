@@ -63,7 +63,7 @@ class TestResolveHostName:
         evtx.parent.mkdir(parents=True)
         evtx.write_bytes(b"\x00")
         host = resolve_host_name(evtx, tmp_path)
-        assert host == "10-0-0-5"
+        assert host == "10.0.0.5"
 
     def test_server_style_name(self, tmp_path: Path) -> None:
         evtx = tmp_path / "SRV-003" / "C" / "Security.evtx"

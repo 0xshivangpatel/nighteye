@@ -1,0 +1,41 @@
+{% extends "layout.html" %}
+
+{% block header %}Evidence Disturbances{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50 flex justify-between items-center">
+        <h3 class="font-medium text-gray-700">Anti-Forensic Disturbances</h3>
+        <span class="text-sm text-gray-500">{{ disturbances|length }} detected</span>
+    </div>
+    {% if disturbances %}
+    <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-6 py-3 font-medium text-gray-500">ID</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Host</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Type</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Window</th>
+                <th class="px-6 py-3 font-medium text-gray-500">Detected By</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y">
+            {% for d in disturbances %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4 font-mono text-xs text-cyan-600">{{ d.disturbance_id[:16] }}</td>
+                <td class="px-6 py-4 font-medium">{{ d.host }}</td>
+                <td class="px-6 py-4">{{ d.disturbance_type }}</td>
+                <td class="px-6 py-4 text-xs text-gray-500">{{ d.window_start }}<br>→ {{ d.window_end }}</td>
+                <td class="px-6 py-4 text-xs text-gray-500">{{ d.detected_by }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="p-8 text-center text-gray-500">
+        <div class="mb-2">No evidence disturbances detected.</div>
+        <div class="text-sm text-gray-400">Disturbances are windows of suspected anti-forensic activity.<br>They are flagged by the anti-forensic constructors during clustering.</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

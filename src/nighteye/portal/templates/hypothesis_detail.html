@@ -1,0 +1,70 @@
+{% extends "layout.html" %}
+
+{% block header %}Hypothesis Detail: {{ hypothesis.hypothesis_id }}{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex items-center justify-between">
+    <div>
+        <h2 class="text-xl font-semibold text-gray-800">{{ hypothesis.title }}</h2>
+        <p class="text-sm text-gray-500 mt-1">{{ hypothesis.observation }}</p>
+    </div>
+    <div class="text-right">
+        {% if hypothesis.status == 'APPROVED' %}
+        <span class="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-bold">{{ hypothesis.status }}</span>
+        {% elif hypothesis.status == 'REJECTED' %}
+        <span class="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-bold">{{ hypothesis.status }}</span>
+        {% else %}
+        <span class="px-3 py-1 bg-gray-100 text-gray-800 rounded-full text-sm font-bold">{{ hypothesis.status }}</span>
+        {% endif %}
+        <div class="text-sm font-medium text-gray-600 mt-1">Confidence: {{ hypothesis.confidence_score }}/100 ({{ hypothesis.confidence_tier }})</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+        <div class="p-4 border-b bg-gray-50">
+            <h3 class="font-medium text-gray-700">Interpretation</h3>
+        </div>
+        <div class="p-4">
+            <p class="text-sm text-gray-700">{{ hypothesis.interpretation }}</p>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+        <div class="p-4 border-b bg-gray-50">
+            <h3 class="font-medium text-gray-700">Metadata</h3>
+        </div>
+        <div class="p-4 text-sm space-y-2">
+            <div class="flex justify-between"><span class="text-gray-500">Examiner:</span> <span>{{ hypothesis.examiner }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">Staged:</span> <span>{{ hypothesis.staged_at }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">Provenance:</span> <span>{{ hypothesis.provenance_tier }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-500">Techniques:</span> <span class="font-mono text-xs">{{ hypothesis.technique_ids | join(", ") if hypothesis.technique_ids else "" }}</span></div>
+            {% if hypothesis.challenge_verdict %}
+            <div class="flex justify-between"><span class="text-gray-500">Challenge:</span> <span>{{ hypothesis.challenge_verdict }}</span></div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+    <div class="p-4 border-b bg-gray-50">
+        <h3 class="font-medium text-gray-700">Related Clusters</h3>
+    </div>
+    <div class="p-4">
+        {% if related_clusters %}
+        <ul class="space-y-2">
+            {% for c in related_clusters %}
+            <li class="text-sm">
+                <a href="/clusters/{{ c.cluster_id }}" class="text-cyan-600 hover:underline font-mono">{{ c.cluster_id[:16] }}...</a>
+                <span class="text-gray-700">{{ c.cluster_type }}</span>
+                <span class="text-xs px-2 py-0.5 rounded {% if c.strength == 'STRONG' %}bg-red-100 text-red-800{% elif c.strength == 'MODERATE' %}bg-orange-100 text-orange-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ c.strength }}</span>
+                <span class="text-xs text-gray-500">{{ c.score }}/100</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-gray-400 italic text-sm">No related clusters.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

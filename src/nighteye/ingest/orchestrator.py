@@ -218,23 +218,15 @@ def resolve_host_name(
         if _is_host_like(part):
             return _sanitize_host(part)
 
-    # Strategy 2.5: Extract IP from directory name fragments
-    # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → "10.3.58.5"
-    for part in parts:
-        import re as _re
-        ip_match = _re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
-        if ip_match:
-            ip = ip_match.group(1).replace("-", ".")
-            octets = ip.split(".")
-            if len(octets) == 4 and all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
-                return _sanitize_host(ip)
-
-    # Strategy 2.6: Extract a real hostname from the TOP-LEVEL extraction dir
+    # Strategy 2.5: Extract a real hostname from the TOP-LEVEL extraction dir
     # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → find "nromanoff"
     # Only search in parts before we hit deep system directories
     for part in parts:
         if part.lower() in _NON_HOST_DIRS or part.lower() in _TRIAGE_MARKERS:
             break  # Don't scan into system directories
+        # Skip nighteye extraction directories themselves
+        if "nighteye" in part.lower():
+            continue
         segments = part.lower().replace("_", "-").split("-")
         for seg in segments:
             bad = {"nighteye", "win7", "win", "xp", "c", "drive", "32", "64", "86"}
@@ -242,6 +234,19 @@ def resolve_host_name(
                 continue
             if len(seg) >= 3 and any(c.isalpha() for c in seg):
                 return _sanitize_host(seg)
+
+    # Strategy 2.6: Extract IP from directory name fragments (lower priority than real hostnames)
+    # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → "10.3.58.5"
+    for part in parts:
+        if "nighteye" in part.lower():
+            continue
+        import re as _re
+        ip_match = _re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
+        if ip_match:
+            ip = ip_match.group(1).replace("-", ".")
+            octets = ip.split(".")
+            if len(octets) == 4 and all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
+                return _sanitize_host(ip)
 
     # Strategy 3: First non-root directory
     if len(parts) >= 2:
@@ -279,8 +284,13 @@ def _is_host_like(name: str) -> bool:
 def _sanitize_host(name: str) -> str:
     """Sanitize a host name for use in index names."""
     clean = name.lower().strip()
-    clean = re.sub(r'[^a-z0-9\-]', '-', clean)
-    clean = re.sub(r'-+', '-', clean).strip('-')
+    # Preserve dots in valid IPv4 addresses; otherwise replace non-alphanum with dash
+    import re as _re
+    ipv4_match = _re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", clean)
+    if ipv4_match:
+        return clean
+    clean = _re.sub(r'[^a-z0-9\-]', '-', clean)
+    clean = _re.sub(r'-+', '-', clean).strip('-')
     return clean or "unknown-host"
 
 

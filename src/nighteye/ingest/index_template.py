@@ -142,7 +142,7 @@ def build_index_template() -> dict[str, Any]:
                             },
                         }
                     },
-                    # NightEye extension fields
+                    # NightEye extension fields (nested)
                     "nighteye": {
                         "properties": {
                             "ingest_id": {"type": "keyword"},
@@ -157,6 +157,25 @@ def build_index_template() -> dict[str, Any]:
                             "evidence_disturbed": {"type": "boolean"},
                         }
                     },
+                    # Flat CanonicalEvent fields (produced by to_dict() in canonical indices)
+                    "canonical_type": {"type": "keyword"},
+                    "host_name": {"type": "keyword"},
+                    "event_id": {"type": "keyword"},
+                    "process_name": {"type": "keyword"},
+                    "process_path": {"type": "keyword"},
+                    "command_line": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {"type": "keyword", "ignore_above": 512}
+                        }
+                    },
+                    "target_file": {"type": "keyword"},
+                    "registry_key": {"type": "keyword"},
+                    "remote_ip": {"type": "ip"},
+                    "remote_port": {"type": "long"},
+                    "alert_name": {"type": "keyword"},
+                    "alert_level": {"type": "keyword"},
+                    "user": {"type": "keyword"},
                 },
             },
         },

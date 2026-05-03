@@ -1,0 +1,116 @@
+{% extends "layout.html" %}
+
+{% block header %}Ingested Evidence{% endblock %}
+
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Canonical Types</h3>
+        <div class="space-y-1 text-sm">
+            {% for ctype, count in type_counts.items()|sort %}
+            <div class="flex justify-between">
+                <span class="text-gray-600">{{ ctype }}</span>
+                <span class="font-semibold">{{ count }}</span>
+            </div>
+            {% else %}
+            <div class="text-gray-400 italic">No events found</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Hosts</h3>
+        <div class="space-y-1 text-sm">
+            {% for hname, count in host_counts.items()|sort %}
+            <div class="flex justify-between">
+                <span class="text-gray-600 font-mono">{{ hname }}</span>
+                <span class="font-semibold">{{ count }}</span>
+            </div>
+            {% else %}
+            <div class="text-gray-400 italic">No hosts found</div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">OpenSearch Indices</h3>
+        <div class="space-y-1 text-sm">
+            {% for idx in indices %}
+            <div class="text-gray-600 font-mono text-xs">{{ idx }}</div>
+            {% else %}
+            <div class="text-gray-400 italic">No indices found</div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mb-6">
+    <div class="p-4 border-b bg-gray-50 flex flex-wrap items-center justify-between gap-4">
+        <h3 class="font-medium text-gray-700">Canonical Events</h3>
+        <form method="get" class="flex items-center gap-2">
+            <select name="canonical_type" class="text-sm border-gray-300 rounded px-2 py-1 border">
+                <option value="">All Types</option>
+                {% for ctype in type_counts.keys()|sort %}
+                <option value="{{ ctype }}" {% if ctype == filter_type %}selected{% endif %}>{{ ctype }}</option>
+                {% endfor %}
+            </select>
+            <select name="host" class="text-sm border-gray-300 rounded px-2 py-1 border">
+                <option value="">All Hosts</option>
+                {% for hname in host_counts.keys()|sort %}
+                <option value="{{ hname }}" {% if hname == filter_host %}selected{% endif %}>{{ hname }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="text-sm bg-cyan-600 text-white px-3 py-1 rounded hover:bg-cyan-700">Filter</button>
+            <a href="/evidence" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>
+        </form>
+    </div>
+    {% if events %}
+    <div class="overflow-auto max-h-[60vh]">
+        <table class="w-full text-left text-sm">
+            <thead class="bg-gray-50 border-b sticky top-0">
+                <tr>
+                    <th class="px-4 py-3 font-medium text-gray-500">Type</th>
+                    <th class="px-4 py-3 font-medium text-gray-500">Host</th>
+                    <th class="px-4 py-3 font-medium text-gray-500">Time</th>
+                    <th class="px-4 py-3 font-medium text-gray-500">Details</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                {% for ev in events %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 text-xs font-medium">{{ ev.canonical_type }}</td>
+                    <td class="px-4 py-3 text-xs font-mono text-gray-600">{{ ev.host_name }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-500">{{ ev.timestamp }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-700">
+                        {% if ev.process_name %}
+                        <span class="font-mono">{{ ev.process_name }}</span>
+                        {% endif %}
+                        {% if ev.command_line %}
+                        <code class="block text-gray-500 mt-0.5">{{ ev.command_line[:80] }}{% if ev.command_line|length > 80 %}...{% endif %}</code>
+                        {% endif %}
+                        {% if ev.target_file %}
+                        <code class="block text-cyan-700 mt-0.5">{{ ev.target_file[:80] }}{% if ev.target_file|length > 80 %}...{% endif %}</code>
+                        {% endif %}
+                        {% if ev.registry_key %}
+                        <code class="block text-purple-700 mt-0.5">{{ ev.registry_key[:80] }}{% if ev.registry_key|length > 80 %}...{% endif %}</code>
+                        {% endif %}
+                        {% if ev.remote_ip %}
+                        <span class="block text-gray-500 mt-0.5">{{ ev.remote_ip }}</span>
+                        {% endif %}
+                        {% if ev.alert_name %}
+                        <span class="block text-red-600 font-medium mt-0.5">{{ ev.alert_name }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="p-8 text-center text-gray-500">
+        <div class="mb-2">No canonical events found.</div>
+        <div class="text-sm text-gray-400">Ensure ingest and normalization have been run for this case.</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
