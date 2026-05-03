@@ -373,8 +373,16 @@ def _metadata_doc(
 
     from nighteye.ingest.ecs import build_ecs_doc
 
+    import datetime as _dt
+    ts_str = ""
+    try:
+        ts_str = _dt.datetime.fromtimestamp(mtime, tz=_dt.timezone.utc).isoformat()
+    except Exception:
+        pass
+
     return build_ecs_doc(
         host_name=host_name,
+        timestamp=ts_str,
         event_code=evidence_type.value,
         event_action="evidence-indexed",
         event_category="artifact",

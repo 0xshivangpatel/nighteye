@@ -313,10 +313,31 @@ class CanonicalNormalizer:
 
     def _extract_timestamp(self, doc: dict[str, Any]) -> str:
         """Extract and normalize timestamp."""
+        # Priority 1: @timestamp field
         ts = doc.get("@timestamp", "")
         if ts:
             norm = normalize_timestamp(ts)
             return norm or ts
+        # Priority 2: ECS @timestamp (nested)
+        ts = doc.get("@timestamp", "")
+        if not ts:
+            ts = doc.get("_source", {}).get("@timestamp", "")
+        if ts:
+            norm = normalize_timestamp(ts)
+            return norm or ts
+        # Priority 3: file timestamps (from metadata docs, timeline CSVs)
+        file_mtime = doc.get("file", {}).get("mtime") or doc.get("file.mtime")
+        if file_mtime:
+            try:
+                from datetime import datetime, timezone
+                if isinstance(file_mtime, (int, float)):
+                    return datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+            norm = normalize_timestamp(str(file_mtime))
+            if norm:
+                return norm
+            return str(file_mtime)
         return ""
 
     def _extract_user(self, doc: dict[str, Any]) -> str:
@@ -350,8 +371,10 @@ class CanonicalNormalizer:
         return doc.get("process", {}).get("command_line", "")
 
     def _extract_file_path(self, doc: dict[str, Any]) -> str:
-        """Extract file path."""
-        return doc.get("file", {}).get("path", "")
+        """Extract file path from nested or flat ECS fields."""
+        return (doc.get("file", {}).get("path", "")
+                or doc.get("file.path", "")
+                or doc.get("target_file", ""))
 
     def _extract_remote_ip(self, doc: dict[str, Any]) -> str:
         """Extract remote IP."""
