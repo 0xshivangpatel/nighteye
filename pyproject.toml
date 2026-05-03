@@ -46,6 +46,7 @@ parsers = [
     "evtx>=0.8",              # pure-Python EVTX parser
     "python-registry>=1.3",   # pure-Python Windows registry hive parser
     "pylnk3>=0.4",            # pure-Python LNK parser
+    "pefile>=2023",           # PE header parser for signature checking
 ]
 
 [project.scripts]

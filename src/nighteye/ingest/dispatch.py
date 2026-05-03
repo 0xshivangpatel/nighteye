@@ -374,6 +374,11 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
     if ext in _UNKNOWN_EXTS:
         for suspicious in _SUSPICIOUS_PATH_PARTS:
             if suspicious in path_lower:
+                # In a suspicious path — but still skip if signed by a known vendor
+                if ext in (".exe", ".dll", ".sys", ".scr"):
+                    from nighteye.ingest.python_pe_signer import is_unsigned_pe
+                    if not is_unsigned_pe(path):
+                        return False  # Signed by Microsoft/Google/etc. — skip
                 return True
 
     # Only skip known system directories AFTER the suspicious check.
@@ -384,7 +389,12 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
             return False
 
     # For executables/documents in non-system, non-suspicious dirs — keep
+    # but still skip if signed by a known vendor (defense in depth)
     if ext in _UNKNOWN_EXTS:
+        if ext in (".exe", ".dll", ".sys", ".scr"):
+            from nighteye.ingest.python_pe_signer import is_unsigned_pe
+            if not is_unsigned_pe(path):
+                return False
         return True
 
     # All other unknown extensions: ingest (they might be relevant)
