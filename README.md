@@ -362,13 +362,23 @@ NightEye provides three ways for judges to evaluate:
 
 ---
 
-## Quick start (will fill in as build progresses)
+## Quick start
+
+### One-command SIFT setup
 
 ```bash
-# Install (after D1 of build plan)
-git clone https://github.com/<user>/nighteye.git
+git clone https://github.com/0xshivangpatel/nighteye.git
+cd nighteye && bash setup.sh
+```
+
+This installs Python deps, Hayabusa + Sigma rules, YARA + signature-base rules, and starts OpenSearch in Docker.
+
+### Manual setup
+
+```bash
+git clone https://github.com/0xshivangpatel/nighteye.git
 cd nighteye
-pip install -e ".[dev]"
+pip install -e ".[dev,parsers]"
 
 # Initialize a case
 nighteye case init "FOR508 lab investigation"
