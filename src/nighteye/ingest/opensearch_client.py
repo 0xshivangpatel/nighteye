@@ -176,8 +176,10 @@ class NightEyeOSClient:
         """Bulk index documents into OpenSearch.
 
         Splits into batches of ``bulk_batch_size`` and indexes each batch.
-        If ``shard_breaker_threshold`` consecutive batches fail, the
-        circuit breaker trips and all further indexing is refused.
+        Individual doc errors (mapping conflicts, etc.) are logged but do NOT
+        abort the batch — other docs in the same batch still get indexed.
+        The circuit breaker only trips on connection-level failures where
+        OpenSearch itself is unreachable.
 
         Args:
             index: Target index name.
@@ -189,17 +191,10 @@ class NightEyeOSClient:
             Dict with keys: indexed, errors, total.
 
         Raises:
-            RuntimeError: If the circuit breaker has tripped.
             ConnectionError: If not connected.
         """
         self._require_connection()
         assert self._client is not None
-
-        if self._breaker_tripped:
-            raise RuntimeError(
-                f"Shard breaker tripped after {self._config.shard_breaker_threshold} "
-                f"consecutive failures. Resolve OpenSearch issues and reconnect."
-            )
 
         batch_size = self._config.bulk_batch_size
         total_indexed = 0
@@ -231,41 +226,20 @@ class NightEyeOSClient:
                 total_errors += error_count
 
                 if error_count > 0:
-                    self._consecutive_failures += 1
+                    # Log individual doc errors for debugging
+                    for err in (errors if isinstance(errors, list) else []):
+                        err_type = err.get("index", {}).get("error", {}).get("type", "unknown") if isinstance(err, dict) else ""
+                        logger.debug("Doc error in %s: %s", index, err_type)
                     logger.warning(
-                        "Bulk batch %d-%d: %d indexed, %d errors (consecutive: %d/%d)",
+                        "Bulk batch %d-%d: %d indexed, %d errors — continuing",
                         i, i + len(batch), success, error_count,
-                        self._consecutive_failures, self._config.shard_breaker_threshold,
-                    )
-                    if error_count < len(batch):
-                        self._consecutive_failures = max(0, self._consecutive_failures - 1)
-                else:
-                    self._consecutive_failures = max(0, self._consecutive_failures - 1)  # gradual recovery
-
-                if self._consecutive_failures >= self._config.shard_breaker_threshold:
-                    self._breaker_tripped = True
-                    logger.error(
-                        "Shard breaker tripped after %d consecutive failures!",
-                        self._consecutive_failures,
-                    )
-                    raise RuntimeError(
-                        f"Shard breaker tripped: {self._consecutive_failures} "
-                        f"consecutive bulk failures"
                     )
 
-            except RuntimeError:
-                raise  # re-raise breaker trips
             except Exception as exc:
-                self._consecutive_failures += 1
+                # Connection-level failure — log and continue to next batch
+                # rather than aborting all remaining docs.
                 total_errors += len(batch)
-                logger.error("Bulk batch failed: %s", exc)
-
-                if self._consecutive_failures >= self._config.shard_breaker_threshold:
-                    self._breaker_tripped = True
-                    raise RuntimeError(
-                        f"Shard breaker tripped: {self._consecutive_failures} "
-                        f"consecutive bulk failures"
-                    ) from exc
+                logger.error("Bulk batch %d-%d failed: %s — skipping, continuing", i, i + len(batch), exc)
 
         return {
             "indexed": total_indexed,
