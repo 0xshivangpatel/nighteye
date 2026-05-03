@@ -132,12 +132,23 @@ def create_portal_app(
                     """,
                     (case_id,),
                 ).fetchall()
+
+                # Get open evidence gaps
+                gaps_rows = conn.execute(
+                    """
+                    SELECT gap_id, question, blocks_hypothesis, registered_at
+                    FROM evidence_gaps WHERE case_id = ? AND resolved_at IS NULL
+                    ORDER BY registered_at DESC LIMIT 10
+                    """,
+                    (case_id,),
+                ).fetchall()
         except sqlite3.OperationalError as exc:
             logger.warning("Database schema error in dashboard: %s", exc)
             case_row = None
             clusters = hypotheses = approved = entities = disturbances = 0
             top_clusters = []
             recent_hypotheses = []
+            gaps_rows = []
         except HTTPException:
             raise
         except Exception as exc:
@@ -146,6 +157,7 @@ def create_portal_app(
             clusters = hypotheses = approved = entities = disturbances = 0
             top_clusters = []
             recent_hypotheses = []
+            gaps_rows = []
 
         active_case = get_active_case()
         return templates.TemplateResponse(request, "index.html", {
@@ -159,6 +171,7 @@ def create_portal_app(
             },
             "top_clusters": [dict(c) for c in top_clusters],
             "recent_hypotheses": [dict(h) for h in recent_hypotheses],
+            "gaps": [dict(g) for g in gaps_rows],
         })
 
     @app.get("/clusters", response_class=HTMLResponse)

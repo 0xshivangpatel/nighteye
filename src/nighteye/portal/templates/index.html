@@ -8,9 +8,12 @@
     <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
         <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Ingestion Status</h3>
         <div class="space-y-2 text-sm">
-            <div class="flex justify-between"><span class="text-gray-600">Hosts Processed:</span> <span class="font-semibold">{{ stats.hosts }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-600">Artifact Types:</span> <span class="font-semibold">{{ stats.artifact_types }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-600">Anti-Forensics Observed:</span> <span class="font-semibold text-amber-500">Yes</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Case ID:</span> <span class="font-semibold">{{ case.id }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Clusters:</span> <span class="font-semibold">{{ stats.clusters }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Entities:</span> <span class="font-semibold">{{ stats.entities }}</span></div>
+            {% if stats.disturbances > 0 %}
+            <div class="flex justify-between"><span class="text-gray-600">Anti-Forensics:</span> <span class="font-semibold text-amber-500">{{ stats.disturbances }} disturbance(s)</span></div>
+            {% endif %}
         </div>
     </div>
 
@@ -18,54 +21,62 @@
     <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
         <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Agent Hypotheses</h3>
         <div class="space-y-2 text-sm">
-            <div class="flex justify-between"><span class="text-gray-600">Approved (Conclusive):</span> <span class="font-semibold text-green-600">{{ stats.hypotheses_approved }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-600">Draft (In-Progress):</span> <span class="font-semibold text-blue-600">{{ stats.hypotheses_draft }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-600">Insufficient Evidence:</span> <span class="font-semibold text-amber-500">{{ stats.insufficient }}</span></div>
-            <div class="flex justify-between"><span class="text-gray-600">Rejected (Refuted):</span> <span class="font-semibold text-red-500">{{ stats.rejected }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Approved:</span> <span class="font-semibold text-green-600">{{ stats.approved }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Draft:</span> <span class="font-semibold text-blue-600">{{ stats.hypotheses - stats.approved }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-600">Total:</span> <span class="font-semibold">{{ stats.hypotheses }}</span></div>
         </div>
     </div>
 
-    <!-- Evidence Gaps Card -->
+    <!-- Gaps Card -->
     <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
-        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Open Evidence Gaps</h3>
+        <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-4">Evidence Gaps</h3>
         <div class="text-sm">
-            <div class="p-3 bg-amber-50 rounded border border-amber-100 text-amber-800 mb-2">
-                <span class="font-mono font-semibold text-xs bg-amber-200 px-1 rounded mr-1">GAP-001</span>
-                Missing VPN logs for external IP correlation.
+            {% if gaps %}
+            {% for gap in gaps[:5] %}
+            <div class="p-2 bg-amber-50 rounded border border-amber-100 text-amber-800 mb-1 text-xs">
+                <span class="font-mono font-semibold">{{ gap.gap_id }}</span> {{ gap.question[:80] }}
             </div>
+            {% endfor %}
+            {% else %}
+            <div class="text-gray-400 italic text-sm">No open evidence gaps</div>
+            {% endif %}
         </div>
     </div>
 </div>
 
-<!-- Clusters Overview -->
+<!-- Clusters Table -->
 <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-100 mb-8">
-    <h3 class="text-gray-800 text-lg font-semibold mb-4">Triage Clusters by Type</h3>
+    <h3 class="text-gray-800 text-lg font-semibold mb-4">Top Clusters by Score</h3>
+    {% if top_clusters %}
     <table class="w-full text-left text-sm">
         <thead class="bg-gray-50 border-b">
             <tr>
-                <th class="px-4 py-3 font-medium text-gray-500">Behavior Type</th>
-                <th class="px-4 py-3 font-medium text-red-600">STRONG</th>
-                <th class="px-4 py-3 font-medium text-orange-500">MODERATE</th>
-                <th class="px-4 py-3 font-medium text-yellow-500">WEAK</th>
-                <th class="px-4 py-3 font-medium text-gray-400">NOISE</th>
+                <th class="px-4 py-3 font-medium text-gray-500">ID</th>
+                <th class="px-4 py-3 font-medium text-gray-500">Type</th>
+                <th class="px-4 py-3 font-medium text-gray-500">Host</th>
+                <th class="px-4 py-3 font-medium text-gray-500">Score</th>
+                <th class="px-4 py-3 font-medium text-gray-500">Strength</th>
             </tr>
         </thead>
         <tbody class="divide-y">
+            {% for cluster in top_clusters %}
             <tr>
-                <td class="px-4 py-3 font-medium">Lateral Movement</td>
-                <td class="px-4 py-3">3</td>
-                <td class="px-4 py-3">5</td>
-                <td class="px-4 py-3">12</td>
-                <td class="px-4 py-3 text-gray-400">47</td>
+                <td class="px-4 py-3 font-mono text-xs">{{ cluster.cluster_id[:16] }}</td>
+                <td class="px-4 py-3 font-medium">{{ cluster.cluster_type }}</td>
+                <td class="px-4 py-3 text-gray-600">{{ cluster.primary_host }}</td>
+                <td class="px-4 py-3">{{ cluster.score }}</td>
+                <td class="px-4 py-3">
+                    {% if cluster.strength == 'STRONG' %}<span class="text-red-600 font-semibold">STRONG</span>
+                    {% elif cluster.strength == 'MODERATE' %}<span class="text-orange-500 font-semibold">MOD</span>
+                    {% elif cluster.strength == 'WEAK' %}<span class="text-yellow-500">WEAK</span>
+                    {% else %}<span class="text-gray-400">{{ cluster.strength }}</span>{% endif %}
+                </td>
             </tr>
-            <tr>
-                <td class="px-4 py-3 font-medium">Persistence</td>
-                <td class="px-4 py-3">2</td>
-                <td class="px-4 py-3">4</td>
-                <td class="px-4 py-3">2</td>
-                <td class="px-4 py-3 text-gray-400">18</td>
-            </tr>
+            {% endfor %}
         </tbody>
     </table>
+    {% else %}
+    <div class="text-gray-400 italic text-sm">No clusters found. Run ingest + normalize + cluster first.</div>
+    {% endif %}
 </div>
 {% endblock %}
