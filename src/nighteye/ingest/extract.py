@@ -313,6 +313,13 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             logger.debug("Skipping previously-failed %s", source.name)
             continue
 
+        # Skip nested zips inside already-extracted dirs — these are
+        # application data (McAfee agents, etc.), not forensic evidence.
+        # Check for _nighteye/ or \_nighteye\ (dir separator before marker name).
+        if "_nighteye/" in source_key.lower() or "_nighteye\\" in source_key.lower():
+            logger.debug("Skipping nested zip inside extraction: %s", source.name)
+            continue
+
         if _is_archive(source):
             logger.info("Extracting archive %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):

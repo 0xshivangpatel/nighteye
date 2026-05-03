@@ -405,6 +405,21 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
     print("=" * 60)
     total_start = _time.time()
 
+    # Step 0: Clean old OpenSearch indices from previous runs
+    client = NightEyeOSClient()
+    try:
+        old_indices = client.list_indices(f"case-{case.id.lower()}-*")
+        if old_indices and not args.no_clean:
+            print("\n[0/4] Cleaning old case indices...")
+            for idx in old_indices:
+                try:
+                    client.delete_index(idx)
+                except Exception:
+                    pass
+            print(f"  → Removed {len(old_indices)} old indices")
+    except Exception:
+        pass
+
     # Step 1: Ingest
     print("\n[1/4] Ingesting evidence...")
     t0 = _time.time()
@@ -537,7 +552,8 @@ def main(argv: list[str] | None = None) -> int:
     # full-pipeline
     pipeline_parser = subparsers.add_parser("full-pipeline", help="Run complete pipeline")
     pipeline_parser.add_argument("directory", help="Evidence directory")
-    pipeline_parser.set_defaults(func=cmd_full_pipeline)
+    pipeline_parser.add_argument("--no-clean", action="store_true", help="Skip cleaning old case indices")
+    pipeline_parser.set_defaults(func=cmd_full_pipeline, no_clean=False)
 
     # serve
     serve_parser = subparsers.add_parser(
