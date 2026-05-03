@@ -76,6 +76,180 @@ def create_portal_app(
         """Get OpenSearch client."""
         return NightEyeOSClient()
 
+    def _detect_disturbances(case_id: str) -> list[dict[str, Any]]:
+        """Auto-detect anti-forensic disturbances from clusters and insert them."""
+        disturbances: list[dict[str, Any]] = []
+        try:
+            with connect(get_active_case().graph_db, read_only=False) as conn:
+                # Check if any already exist
+                existing = conn.execute(
+                    "SELECT COUNT(*) FROM evidence_disturbances WHERE case_id = ?", (case_id,)
+                ).fetchone()[0]
+                if existing > 0:
+                    return []
+
+                # Look for anti-forensic cluster types
+                rows = conn.execute(
+                    """
+                    SELECT cluster_id, cluster_type, primary_host, score,
+                           time_start, time_end, triggers_fired, summary
+                    FROM clusters
+                    WHERE case_id = ? AND cluster_type IN (
+                        'log_clearing', 'shadow_deletion', 'timestomp',
+                        'wevutil_clear', 'eventlog_disabled', 'backup_deletion'
+                    )
+                    """,
+                    (case_id,),
+                ).fetchall()
+
+                for r in rows:
+                    triggers = []
+                    try:
+                        triggers = json.loads(r["triggers_fired"] or "[]")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                    dist_id = f"dist-{r['cluster_id'][:16]}"
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO evidence_disturbances
+                        (disturbance_id, case_id, host, window_start, window_end,
+                         disturbance_type, detected_by, source_audit_id, details, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            dist_id,
+                            case_id,
+                            r["primary_host"] or "unknown",
+                            r["time_start"],
+                            r["time_end"],
+                            r["cluster_type"],
+                            "constructor",
+                            r["cluster_id"],
+                            json.dumps({"score": r["score"], "triggers": triggers, "summary": r["summary"]}),
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+                    disturbances.append({
+                        "disturbance_id": dist_id,
+                        "host": r["primary_host"] or "unknown",
+                        "window_start": r["time_start"],
+                        "window_end": r["time_end"],
+                        "disturbance_type": r["cluster_type"],
+                        "detected_by": "constructor",
+                        "details": json.dumps({"score": r["score"], "triggers": triggers}),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    })
+        except Exception as exc:
+            logger.warning("Auto-detect disturbances failed: %s", exc)
+        return disturbances
+
+    def _detect_gaps(case_id: str) -> list[dict[str, Any]]:
+        """Auto-detect evidence gaps from case capabilities and clusters."""
+        gaps: list[dict[str, Any]] = []
+        try:
+            with connect(get_active_case().graph_db, read_only=False) as conn:
+                existing = conn.execute(
+                    "SELECT COUNT(*) FROM evidence_gaps WHERE case_id = ?", (case_id,)
+                ).fetchone()[0]
+                if existing > 0:
+                    return []
+
+                # Get case capabilities
+                cap_row = conn.execute(
+                    "SELECT artifact_types, has_memory, has_network FROM case_capabilities WHERE case_id = ?",
+                    (case_id,),
+                ).fetchone()
+
+                if not cap_row:
+                    return []
+
+                artifact_types: list[str] = []
+                try:
+                    artifact_types = json.loads(cap_row["artifact_types"] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # Check for missing core evidence types
+                expected_types = {
+                    "evtx": ("No Windows Event Logs ingested", "Ingest Security.evtx, System.evtx, Application.evtx"),
+                    "memory": ("No memory dump available", "Ingest a .mem or .raw memory dump"),
+                    "pcap": ("No network capture available", "Ingest a .pcap or .pcapng file"),
+                    "registry": ("No registry hives ingested", "Ingest SAM, SYSTEM, SOFTWARE hives"),
+                }
+
+                for key, (question, resolve) in expected_types.items():
+                    has_it = key in [a.lower() for a in artifact_types]
+                    if key == "memory":
+                        has_it = bool(cap_row["has_memory"])
+                    if key == "pcap":
+                        has_it = bool(cap_row["has_network"])
+                    if not has_it:
+                        gap_id = f"gap-{key}-{case_id[:8]}"
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO evidence_gaps
+                            (gap_id, case_id, question, what_would_resolve, blocks_hypothesis,
+                             blocks_report, registered_at, registered_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                gap_id,
+                                case_id,
+                                question,
+                                resolve,
+                                None,
+                                0,
+                                datetime.now(timezone.utc).isoformat(),
+                                "auto-detection",
+                            ),
+                        )
+                        gaps.append({
+                            "gap_id": gap_id,
+                            "question": question,
+                            "what_would_resolve": resolve,
+                            "blocks_hypothesis": None,
+                            "registered_at": datetime.now(timezone.utc).isoformat(),
+                            "registered_by": "auto-detection",
+                        })
+
+                # Check cluster diversity: if only one constructor type, that's a gap
+                cluster_types = conn.execute(
+                    "SELECT DISTINCT cluster_type FROM clusters WHERE case_id = ?",
+                    (case_id,),
+                ).fetchall()
+                if len(cluster_types) <= 1:
+                    gap_id = f"gap-diversity-{case_id[:8]}"
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO evidence_gaps
+                        (gap_id, case_id, question, what_would_resolve, blocks_hypothesis,
+                         blocks_report, registered_at, registered_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            gap_id,
+                            case_id,
+                            "Only one behavioral cluster type detected",
+                            "Ingest additional evidence types (EVTX, memory, network) to trigger more constructors",
+                            None,
+                            0,
+                            datetime.now(timezone.utc).isoformat(),
+                            "auto-detection",
+                        ),
+                    )
+                    gaps.append({
+                        "gap_id": gap_id,
+                        "question": "Only one behavioral cluster type detected",
+                        "what_would_resolve": "Ingest additional evidence types (EVTX, memory, network) to trigger more constructors",
+                        "blocks_hypothesis": None,
+                        "registered_at": datetime.now(timezone.utc).isoformat(),
+                        "registered_by": "auto-detection",
+                    })
+        except Exception as exc:
+            logger.warning("Auto-detect gaps failed: %s", exc)
+        return gaps
+
     # ========================================================
     # Routes
     # ========================================================
@@ -455,6 +629,68 @@ def create_portal_app(
             "indices": index_info,
         })
 
+    @app.get("/index/{index_name}", response_class=HTMLResponse)
+    async def index_detail_page(
+        request: Request,
+        index_name: str,
+        q: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ):
+        """Drill into a single OpenSearch index and list documents."""
+        docs: list[dict] = []
+        total = 0
+        try:
+            client = _get_client()
+            # Validate the index exists and belongs to this case
+            case_id = _get_case_id()
+            raw_indices = client.list_case_indices(case_id)
+            valid_names = {i.get("index", "") for i in raw_indices}
+            if index_name not in valid_names:
+                raise HTTPException(status_code=404, detail="Index not found for this case")
+
+            query: dict = {"match_all": {}}
+            if q:
+                query = {
+                    "query_string": {
+                        "query": q,
+                        "default_operator": "AND",
+                    }
+                }
+
+            result = client.search_raw(
+                index=index_name,
+                query=query,
+                from_=(page - 1) * page_size,
+                size=page_size,
+            )
+            hits = result.get("hits", {})
+            total = hits.get("total", {}).get("value", 0)
+            for hit in hits.get("hits", []):
+                source = hit.get("_source", {})
+                docs.append({
+                    "id": hit.get("_id", ""),
+                    "source": source,
+                    "preview": json.dumps(source, indent=2, default=str)[:500],
+                })
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("Failed to query index %s: %s", index_name, exc)
+            docs = []
+            total = 0
+
+        total_pages = (total + page_size - 1) // page_size
+        return templates.TemplateResponse(request, "index_docs.html", {
+            "index_name": index_name,
+            "docs": docs,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "q": q,
+        })
+
     @app.get("/graph", response_class=HTMLResponse)
     async def graph_page(request: Request, entity_type: str = ""):
         """Interactive graph visualization page."""
@@ -563,6 +799,8 @@ def create_portal_app(
         """Evidence disturbances page."""
         try:
             case_id = _get_case_id()
+            # Auto-detect if table appears empty
+            _detect_disturbances(case_id)
             with _get_db() as conn:
                 rows = conn.execute(
                     """
@@ -587,6 +825,8 @@ def create_portal_app(
         """Evidence gaps page."""
         try:
             case_id = _get_case_id()
+            # Auto-detect if table appears empty
+            _detect_gaps(case_id)
             with _get_db() as conn:
                 rows = conn.execute(
                     """

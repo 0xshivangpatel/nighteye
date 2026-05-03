@@ -308,6 +308,31 @@ class NightEyeOSClient:
         )
         return [hit["_source"] for hit in result["hits"]["hits"]]
 
+    def search_raw(
+        self,
+        index: str,
+        query: dict[str, Any],
+        from_: int = 0,
+        size: int = 100,
+    ) -> dict[str, Any]:
+        """Execute a search query and return the raw OpenSearch response.
+
+        Args:
+            index: Index name or wildcard pattern.
+            query: OpenSearch query DSL body.
+            from_: Offset for pagination.
+            size: Maximum number of hits to return.
+
+        Returns:
+            Full OpenSearch search response dict.
+        """
+        self._require_connection()
+        assert self._client is not None
+        return self._client.search(
+            index=index,
+            body={"query": query, "from": from_, "size": size},
+        )
+
     # --------------------------------------------------------
     # Scale features for 50+ host deployments
     # --------------------------------------------------------

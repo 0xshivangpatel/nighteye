@@ -1,0 +1,59 @@
+{% extends "layout.html" %}
+
+{% block header %}Index: {{ index_name }}{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden mb-6">
+    <div class="p-4 border-b bg-gray-50 flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h3 class="font-medium text-gray-700">Documents</h3>
+            <span class="text-sm text-gray-500">{{ total }} total</span>
+        </div>
+        <form method="get" class="flex items-center gap-2">
+            <input type="text" name="q" value="{{ q }}" placeholder="Query string..." class="text-sm border-gray-300 rounded px-2 py-1 border w-64">
+            <button type="submit" class="text-sm bg-cyan-600 text-white px-3 py-1 rounded hover:bg-cyan-700">Search</button>
+            <a href="/index/{{ index_name }}" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>
+        </form>
+    </div>
+
+    {% if docs %}
+    <div class="overflow-auto max-h-[60vh]">
+        <table class="w-full text-left text-sm">
+            <thead class="bg-gray-50 border-b sticky top-0">
+                <tr>
+                    <th class="px-4 py-3 font-medium text-gray-500">ID</th>
+                    <th class="px-4 py-3 font-medium text-gray-500">Preview</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                {% for doc in docs %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 text-xs font-mono text-cyan-600 w-48">{{ doc.id }}</td>
+                    <td class="px-4 py-3 text-xs text-gray-700">
+                        <pre class="bg-gray-50 p-2 rounded overflow-auto max-h-40 text-xs">{{ doc.preview }}</pre>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="p-4 border-t bg-gray-50 flex justify-between items-center">
+        <span class="text-sm text-gray-500">Page {{ page }} of {{ total_pages }}</span>
+        <div class="flex gap-2">
+            {% if page > 1 %}
+            <a href="/index/{{ index_name }}?page={{ page - 1 }}&page_size={{ page_size }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="text-sm bg-white border border-gray-300 px-3 py-1 rounded hover:bg-gray-50">Previous</a>
+            {% endif %}
+            {% if page < total_pages %}
+            <a href="/index/{{ index_name }}?page={{ page + 1 }}&page_size={{ page_size }}{% if q %}&q={{ q | urlencode }}{% endif %}" class="text-sm bg-white border border-gray-300 px-3 py-1 rounded hover:bg-gray-50">Next</a>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <div class="p-8 text-center text-gray-500">
+        <div class="mb-2">No documents found.</div>
+        <div class="text-sm text-gray-400">Try clearing the search or checking the index name.</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

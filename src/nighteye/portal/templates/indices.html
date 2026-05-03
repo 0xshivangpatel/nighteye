@@ -20,7 +20,9 @@
         <tbody class="divide-y">
             {% for idx in indices %}
             <tr class="hover:bg-gray-50">
-                <td class="px-6 py-4 font-mono text-xs text-cyan-600">{{ idx.name }}</td>
+                <td class="px-6 py-4 font-mono text-xs text-cyan-600">
+                    <a href="/index/{{ idx.name }}" class="hover:underline">{{ idx.name }}</a>
+                </td>
                 <td class="px-6 py-4">{{ idx.docs }}</td>
                 <td class="px-6 py-4 text-gray-600">{{ idx.size }}</td>
             </tr>
