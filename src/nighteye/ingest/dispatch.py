@@ -369,18 +369,23 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
     if ext in _ALWAYS_INTERESTING_EXTS:
         return True
 
-    # Skip files in known system directories
-    for sys_dir in _SKIP_SYSTEM_DIRS:
-        if sys_dir in path_lower:
-            return False
-
-    # For executables/documents: only ingest from suspicious locations
+    # For executables/documents: check suspicious locations FIRST.
+    # This catches C:\Windows\System32\Temp\malware.exe correctly.
     if ext in _UNKNOWN_EXTS:
         for suspicious in _SUSPICIOUS_PATH_PARTS:
             if suspicious in path_lower:
                 return True
-        # Not in a suspicious location — skip
-        return False
+
+    # Only skip known system directories AFTER the suspicious check.
+    # A path containing BOTH "system32" AND "temp" will have already
+    # been kept by the suspicious-path check above.
+    for sys_dir in _SKIP_SYSTEM_DIRS:
+        if sys_dir in path_lower:
+            return False
+
+    # For executables/documents in non-system, non-suspicious dirs — keep
+    if ext in _UNKNOWN_EXTS:
+        return True
 
     # All other unknown extensions: ingest (they might be relevant)
     return True
