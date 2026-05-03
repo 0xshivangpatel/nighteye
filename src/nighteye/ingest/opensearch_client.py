@@ -122,7 +122,15 @@ class NightEyeOSClient:
                 f"OpenSearch at {self._config.url} not responding: {exc}"
             ) from exc
 
-    def close(self) -> None:
+    def index_exists(self, index: str) -> bool:
+        """Check if an index exists and has documents."""
+        self._require_connection()
+        assert self._client is not None
+        try:
+            count = self._client.count(index=index)
+            return count.get("count", 0) > 0
+        except Exception:
+            return False
         """Close the OpenSearch connection."""
         if self._client:
             self._client.close()
