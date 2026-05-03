@@ -112,7 +112,7 @@ _METADATA_CODE_TO_CANONICAL: dict[str, CanonicalType] = {
     "evtx_folder": CanonicalType.PROCESS_EXECUTION,
     "registry": CanonicalType.REGISTRY_MODIFICATION,
     "mft": CanonicalType.FILE_MODIFICATION,
-    "prefetch": CanonicalType.FILE_CREATION,
+    "prefetch": CanonicalType.PROCESS_EXECUTION,  # .pf files = execution evidence
     "lnk": CanonicalType.FILE_CREATION,
     "memory": CanonicalType.PROCESS_EXECUTION,
     "pcap": CanonicalType.NETWORK_CONNECTION,

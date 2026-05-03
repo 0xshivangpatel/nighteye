@@ -210,6 +210,18 @@ def _extract_edges(event: CanonicalEvent, entity_map: dict[str, str]) -> list[di
             "properties": {"operation": "create"},
         })
 
+    # File observed on host (metadata docs: no process context available)
+    if file_id and host_id and event.canonical_type in (
+        CanonicalType.FILE_CREATION, CanonicalType.FILE_MODIFICATION,
+        CanonicalType.FILE_DELETION,
+    ) and not process_id:
+        edges.append({
+            "from_entity": file_id,
+            "to_entity": host_id,
+            "edge_type": "accessed",
+            "properties": {"operation": event.canonical_type.value.lower()},
+        })
+
     # Process connected to network
     if process_id and network_id and event.canonical_type == CanonicalType.NETWORK_CONNECTION:
         edges.append({
@@ -241,6 +253,22 @@ def _extract_edges(event: CanonicalEvent, entity_map: dict[str, str]) -> list[di
                 "edge_type": "persists_via",
                 "properties": {"mechanism": "registry_run"},
             })
+
+    # Generic entity→host edge for events without process context.
+    # Ensures file/registry/network entities connect to their host
+    # even when metadata docs lack process/user info.
+    if host_id:
+        for etype_name, eid in [
+            ("file", file_id), ("registry", registry_id),
+            ("network", network_id), ("service", service_id),
+        ]:
+            if eid:
+                edges.append({
+                    "from_entity": eid,
+                    "to_entity": host_id,
+                    "edge_type": "accessed",
+                    "properties": {"source": etype_name},
+                })
 
     return edges
 
