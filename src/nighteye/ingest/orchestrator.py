@@ -314,7 +314,7 @@ def build_ingest_plan(
     if isinstance(roots, Path):
         roots = [roots]
     
-    exclude = exclude_types or {EvidenceType.UNKNOWN}
+    exclude = exclude_types or set()  # include UNKNOWN files — metadata fallback indexes them
     plan = IngestPlan(roots=roots, case_id=case_id)
 
     # Phase 1: Discover all evidence files

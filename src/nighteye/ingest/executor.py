@@ -199,11 +199,14 @@ def _stream_directory(
         if item.name == ".nighteye_extracted":
             continue
         detected = detect_evidence_type(item)
-        # Skip unknown and recursive container types.
-        if detected.evidence_type in (EvidenceType.UNKNOWN, EvidenceType.KAPE_ZIP):
-            continue
-
         file_audit_id = f"{audit_id}-{item.name}"
+        # UNKNOWN types get metadata docs (could be malware .exe, .dll, etc.)
+        if detected.evidence_type == EvidenceType.UNKNOWN:
+            yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
+            continue
+        # Recursive container types — skip, already handled by extraction
+        if detected.evidence_type == EvidenceType.KAPE_ZIP:
+            continue
 
         if detected.evidence_type in (EvidenceType.EVTX_FILE, EvidenceType.EVTX_FOLDER):
             yield from parse_evtx_file(

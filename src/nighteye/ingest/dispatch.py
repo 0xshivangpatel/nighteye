@@ -81,6 +81,28 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".csv": EvidenceType.WIN_TIMELINE,   # bodyfile / supertimeline / volatility output
     ".json": EvidenceType.WIN_TIMELINE,  # volatility JSON / redline JSON output
     ".jsonl": EvidenceType.WIN_TIMELINE,
+    # Executable types — metadata-indexed for path/timestamp evidence
+    ".exe": EvidenceType.UNKNOWN,
+    ".dll": EvidenceType.UNKNOWN,
+    ".sys": EvidenceType.UNKNOWN,
+    ".bat": EvidenceType.UNKNOWN,
+    ".cmd": EvidenceType.UNKNOWN,
+    ".vbs": EvidenceType.UNKNOWN,
+    ".ps1": EvidenceType.UNKNOWN,
+    ".js": EvidenceType.UNKNOWN,
+    ".vbe": EvidenceType.UNKNOWN,
+    ".scr": EvidenceType.UNKNOWN,
+    ".msi": EvidenceType.UNKNOWN,
+    ".dat": EvidenceType.UNKNOWN,
+    # Document types — metadata-indexed for content context
+    ".doc": EvidenceType.UNKNOWN,
+    ".docx": EvidenceType.UNKNOWN,
+    ".xls": EvidenceType.UNKNOWN,
+    ".xlsx": EvidenceType.UNKNOWN,
+    ".pdf": EvidenceType.UNKNOWN,
+    ".txt": EvidenceType.UNKNOWN,
+    ".rtf": EvidenceType.UNKNOWN,
+    ".log": EvidenceType.UNKNOWN,
 }
 
 # Known registry hive filenames (no extension)

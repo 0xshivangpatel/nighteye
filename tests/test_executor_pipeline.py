@@ -75,8 +75,9 @@ def test_kape_zip_directory_fans_out_via_stream_directory(tmp_path: Path) -> Non
     )
 
     docs = list(_stream_group_docs(group, case_id="test"))
-    # No real artifacts in the dir → empty stream is correct.
-    assert docs == []
+    # Unknown files now get metadata docs for provenance tracking
+    assert len(docs) == 1
+    assert docs[0].get("event", {}).get("action") == "evidence-indexed"
 
 
 def test_kape_zip_file_does_not_call_run_ez_tool(
@@ -107,6 +108,7 @@ def test_kape_zip_file_does_not_call_run_ez_tool(
     )
 
     docs = list(_stream_group_docs(group, case_id="test"))
+    # KAPE_ZIP files produce nothing (handled at extraction time)
     assert docs == []
     assert calls == [], "run_ez_tool must not be called for KAPE_ZIP"
 
@@ -188,6 +190,8 @@ def test_memory_group_with_text_files_does_not_call_volatility(
         group.files.append(DetectedEvidence(path=p, evidence_type=EvidenceType.MEMORY_DUMP))
 
     docs = list(_stream_group_docs(group, case_id="test"))
+    # Unknown file now gets metadata doc (can be malware .exe, etc.)
+    # Non-memory files routed as MEMORY_DUMP produce nothing (skipped)
     assert docs == []
     assert vol_calls == [], (
         f"Volatility was invoked on non-memory files: {vol_calls}"
@@ -306,4 +310,6 @@ def test_stream_directory_skips_marker_and_unknown(tmp_path: Path) -> None:
             audit_id="audit-1",
         )
     )
-    assert docs == []
+    # Unknown file now gets metadata doc (can be malware .exe, etc.)
+    assert len(docs) == 1
+    assert docs[0].get("event", {}).get("action") == "evidence-indexed"
