@@ -126,25 +126,29 @@ _METADATA_CODE_TO_CANONICAL: dict[str, CanonicalType] = {
 
 
 def _metadata_to_canonical(event_code: str, doc: dict[str, Any]) -> CanonicalType | None:
-    """Map a metadata doc's event code to a canonical type."""
+    """Map a metadata doc's event code to a canonical type.
+    
+    Only maps known forensic artifact types. UNKNOWN, kape_zip, and
+    similar non-forensic types return None (skipped — metadata only).
+    """
     if not event_code:
-        # Try to infer from file extension in path
-        path = (doc.get("file", {}).get("path", "") or "").lower()
-        if path.endswith(".evtx"):
-            return CanonicalType.PROCESS_EXECUTION
-        if any(path.endswith(h) for h in ("sam", "system", "software", "security", "ntuser.dat")):
-            return CanonicalType.REGISTRY_MODIFICATION
-        if path.endswith((".pf", ".dll", ".exe", ".sys", ".msi")):
-            return CanonicalType.FILE_CREATION
+        return None
+
+    # Non-forensic metadata types — these are provenance records, not events
+    _SKIP_CODES = frozenset({"unknown", "kape_zip", "e01"})
+    if event_code.lower() in _SKIP_CODES:
         return None
 
     ct = _METADATA_CODE_TO_CANONICAL.get(event_code.lower())
     if ct:
         return ct
 
-    # Generic fallback: anything with a file path is a file event
-    if doc.get("file", {}).get("path"):
+    # Generic fallback: only for known forensic file extensions in path
+    path = (doc.get("file", {}).get("path", "") or "").lower()
+    if path.endswith((".evtx", ".pf", ".lnk")):
         return CanonicalType.FILE_CREATION
+    if any(path.endswith(h) for h in ("sam", "system", "software", "security", "ntuser.dat")):
+        return CanonicalType.REGISTRY_MODIFICATION
 
     return None
 
