@@ -272,7 +272,12 @@ def _stream_directory(
         # CSV/JSON/TXT timeline data
         if detected.evidence_type == EvidenceType.WIN_TIMELINE:
             from nighteye.ingest.python_csv_json import parse_csv_json
-            yield from parse_csv_json(item, host_name=host_name, source_file=str(item), audit_id=file_audit_id)
+            docs = list(parse_csv_json(item, host_name=host_name,
+                                        source_file=str(item), audit_id=file_audit_id))
+            if docs:
+                yield from docs
+            else:
+                yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
             continue
 
         # Other recognized but unparseable-here types (LNK, JUMPLIST,
@@ -495,8 +500,12 @@ def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, A
                 yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         elif artifact_type == EvidenceType.WIN_TIMELINE:
             from nighteye.ingest.python_csv_json import parse_csv_json
-            yield from parse_csv_json(evidence.path, host_name=host_name,
-                                       source_file=str(evidence.path), audit_id=audit_id)
+            docs = list(parse_csv_json(evidence.path, host_name=host_name,
+                                        source_file=str(evidence.path), audit_id=audit_id))
+            if docs:
+                yield from docs
+            else:
+                yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         elif artifact_type != EvidenceType.UNKNOWN:
             yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         else:

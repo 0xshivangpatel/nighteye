@@ -269,11 +269,12 @@ def test_unsupported_types_skip_silently(
     group.files.append(DetectedEvidence(path=f, evidence_type=etype))
 
     import logging
-
     caplog.set_level(logging.WARNING, logger="nighteye.ingest.executor")
     docs = list(_stream_group_docs(group, case_id="test"))
-    assert docs == []
-    # No WARNING-level logs from the executor for these types.
+    # Unsupported types now emit a metadata doc for provenance tracking
+    assert len(docs) == 1, f"Expected 1 metadata doc for {etype}, got {len(docs)}"
+    assert docs[0].get("event", {}).get("action") == "evidence-indexed"
+    # Remaining assertion about warnings
     warnings = [
         r for r in caplog.records
         if r.levelno >= logging.WARNING
