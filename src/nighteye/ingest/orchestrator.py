@@ -77,8 +77,17 @@ _NON_HOST_DIRS: frozenset[str] = frozenset({
     "logs", "evtx", "registry", "memory", "prefetch",
     "timeline", "filesystem", "artifacts",
     "winevt", "config", "regback",
+    "apache2", "apache", "nginx", "iis", "www", "html",
+    "bulk", "color", "template", "shadow", "volume",
     # Common SRL / FOR508 structure dirs
     "c_drive", "exports", "mounted",
+})
+
+# Name fragments that indicate a non-host directory or extraction artifact
+_NON_HOST_FRAGMENTS: frozenset[str] = frozenset({
+    "nighteye", "win7", "win10", "winxp", "win2008", "win2012", "win2016",
+    "c_drive", "drive", "32", "64", "x86", "x64",
+    "nighteye", "extracted", "output", "triage",
 })
 
 # KAPE / triage tool output directory markers
@@ -218,7 +227,7 @@ def resolve_host_name(
         if _is_host_like(part):
             return _sanitize_host(part)
 
-    # Strategy 2.5: Extract a real hostname from the TOP-LEVEL extraction dir
+    # Strategy 2.5: Extract a real hostname from extraction-style directories
     # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → find "nromanoff"
     # Only search in parts before we hit deep system directories
     for part in parts:
@@ -227,12 +236,26 @@ def resolve_host_name(
         # Skip nighteye extraction directories themselves
         if "nighteye" in part.lower():
             continue
-        segments = part.lower().replace("_", "-").split("-")
+        # Skip parts that match non-host fragments
+        lower_part = part.lower().replace("_", "-")
+        skip = False
+        for frag in _NON_HOST_FRAGMENTS:
+            if frag in lower_part:
+                skip = True
+                break
+        if skip:
+            continue
+        segments = lower_part.split("-")
         for seg in segments:
-            bad = {"nighteye", "win7", "win", "xp", "c", "drive", "32", "64", "86"}
+            bad = {"nighteye", "win7", "win", "xp", "c", "drive", "32", "64", "86",
+                   "controller", "apache", "timeline", "template", "shadow", "volume",
+                   "color", "bulk", "agent"}
             if seg in bad or seg.isdigit():
                 continue
-            if len(seg) >= 3 and any(c.isalpha() for c in seg):
+            # IP address segment — skip (handled by Strategy 2.6)
+            if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', seg):
+                continue
+            if len(seg) >= 3 and any(c.isalpha() for c in seg) and any(c in "aeiou" for c in seg.lower()):
                 return _sanitize_host(seg)
 
     # Strategy 2.6: Extract IP from directory name fragments (lower priority than real hostnames)
@@ -266,6 +289,15 @@ def _is_host_like(name: str) -> bool:
     if lower in _NON_HOST_DIRS:
         return False
 
+    # Skip extraction artifact directories containing nighteye, drive, etc.
+    for frag in _NON_HOST_FRAGMENTS:
+        if frag in lower:
+            return False
+
+    # Skip anything ending in _nighteye (extraction directory)
+    if lower.endswith("_nighteye"):
+        return False
+
     # Skip names that look like hashes or random IDs (8+ chars, no vowels)
     # e.g., "jsp1gs76nm", "afd4ed01", "k0j8v8o5n1"
     if len(name) >= 8:
@@ -274,7 +306,7 @@ def _is_host_like(name: str) -> bool:
         if len(letter_chars) >= 4 and not any(c in vowels for c in letter_chars):
             return False
 
-    # Skip names that are pure hex or hex-like
+    # Skip names that are pure hex
     import re as _re
     if _re.match(r'^[0-9a-f]{6,}$', lower):
         return False
@@ -293,7 +325,7 @@ def _is_host_like(name: str) -> bool:
             if any(c in "aeiou" for c in lower if c.isalpha()):
                 return True
             # Allow common host patterns without vowels: DC-01, SRV-02
-            if _re.match(r'^(?:DC|SRV|PC|WKSTN|WS|HOST|SERVER|IMG|VM)[-_]?\d*', name, re.I):
+            if _re.match(r'^(?:DC|SRV|PC|WKSTN|WS|HOST|SERVER|IMG|VM)[-_]?\d*', name, _re.IGNORECASE):
                 return True
 
     return False

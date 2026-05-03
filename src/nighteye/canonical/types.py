@@ -116,6 +116,7 @@ class CanonicalEvent:
             "source_index": self.source_index,
             "source_doc_id": self.source_doc_id,
             "user": self.user,
+            "canonical_user": self.user,
             "process_name": self.process_name,
             "process_path": self.process_path,
             "pid": self.pid,

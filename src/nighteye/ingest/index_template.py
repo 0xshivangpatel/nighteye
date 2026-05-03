@@ -171,11 +171,14 @@ def build_index_template() -> dict[str, Any]:
                     },
                     "target_file": {"type": "keyword"},
                     "registry_key": {"type": "keyword"},
-                    "remote_ip": {"type": "ip"},
+                    "remote_ip": {"type": "keyword"},
                     "remote_port": {"type": "long"},
                     "alert_name": {"type": "keyword"},
                     "alert_level": {"type": "keyword"},
-                    "user": {"type": "keyword"},
+                    # Flat user field for canonical indices uses a different key
+                    # to avoid conflicting with the nested "user" object above.
+                    "canonical_user": {"type": "keyword"},
+                    "pid": {"type": "long"},
                 },
             },
         },
