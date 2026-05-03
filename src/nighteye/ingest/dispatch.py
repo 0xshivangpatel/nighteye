@@ -217,25 +217,29 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
     # Directory: check if it contains recognized evidence patterns
     if path.is_dir():
         size = 0
-        # Check for each content pattern
-        for pattern, etype in _DIR_CONTENT_HINTS:
-            if pattern.startswith("."):
-                # Extension match
-                files = list(path.rglob(f"*{pattern}"))
+    # Check for each content pattern
+    for pattern, etype in _DIR_CONTENT_HINTS:
+        if pattern.startswith("."):
+            # Extension match — use non-recursive glob for .evtx to avoid
+            # detecting every parent directory; rglob for others
+            if pattern == ".evtx":
+                files = list(path.glob(f"*{pattern}"))
             else:
-                # Filename match (case-insensitive)
-                files = [
-                    f for f in path.rglob("*")
-                    if f.is_file() and f.name.lower() == pattern.lower()
-                ]
-            if files:
-                total_size = sum(f.stat().st_size for f in files)
-                return DetectedEvidence(
-                    path=path,
-                    evidence_type=etype,
-                    size_bytes=total_size,
-                    note=f"Contains {len(files)} {pattern} files",
-                )
+                files = list(path.rglob(f"*{pattern}"))
+        else:
+            # Filename match (case-insensitive)
+            files = [
+                f for f in path.rglob("*")
+                if f.is_file() and f.name.lower() == pattern.lower()
+            ]
+        if files:
+            total_size = sum(f.stat().st_size for f in files)
+            return DetectedEvidence(
+                path=path,
+                evidence_type=etype,
+                size_bytes=total_size,
+                note=f"Contains {len(files)} {pattern} files",
+            )
 
         # Check path hints for directories
         full_path_lower = str(path).lower().replace("\\", "/")

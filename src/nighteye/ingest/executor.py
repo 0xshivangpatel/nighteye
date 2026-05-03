@@ -47,6 +47,7 @@ def execute_ingest_plan(
     client: NightEyeOSClient,
     *,
     force_merge: bool = True,
+    force_reingest: bool = False,
 ) -> IngestResult:
     """Execute an ingest plan and stream documents to OpenSearch.
 
@@ -87,21 +88,27 @@ def execute_ingest_plan(
     for group in plan.groups:
         group_start = time.time()
 
-        # Resume: skip groups already ingested (index exists with documents)
-        if client.index_exists(group.index_name):
-            logger.info("Skipping already ingested: %s/%s (%d docs)",
-                         group.host, group.artifact_type.value,
-                         len(group.files))
-            group.status = "done"
-            result.groups_completed += 1
-            files_done += len(group.files)
-            if group_pbar:
-                group_pbar.set_postfix_str(
-                    f"host={group.host} type={group.artifact_type.value} ⏭ skip "
-                    f"files={files_done}/{total_files} total={result.total_docs_indexed:,}"
-                )
-                group_pbar.update(1)
-            continue
+        # Resume: skip groups already ingested (index exists AND has documents)
+        if not force_reingest and client.index_exists(group.index_name):
+            doc_count = client.count(group.index_name)
+            if doc_count > 0:
+                logger.info("Skipping already ingested: %s/%s (%d docs, %d files)",
+                             group.host, group.artifact_type.value,
+                             doc_count, len(group.files))
+                group.status = "done"
+                result.groups_completed += 1
+                files_done += len(group.files)
+                if group_pbar:
+                    group_pbar.set_postfix_str(
+                        f"host={group.host} type={group.artifact_type.value} ⏭ skip "
+                        f"files={files_done}/{total_files} total={result.total_docs_indexed:,}"
+                    )
+                    group_pbar.update(1)
+                continue
+            else:
+                logger.info("Re-ingesting empty index: %s/%s (%d files)",
+                             group.host, group.artifact_type.value,
+                             len(group.files))
 
         group.status = "ingesting"
 

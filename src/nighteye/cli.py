@@ -117,6 +117,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         case_id=case.id,
         examiner=case.examiner,
         tool_filter=args.tool,
+        force_reingest=args.force,
     )
 
     print(f"Ingest complete:")
@@ -500,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest_parser = subparsers.add_parser("ingest", help="Ingest evidence")
     ingest_parser.add_argument("directory", help="Evidence directory")
     ingest_parser.add_argument("--tool", help="Filter by tool")
+    ingest_parser.add_argument("--force", action="store_true", help="Force re-ingest even if index exists")
     ingest_parser.set_defaults(func=cmd_ingest)
 
     # normalize

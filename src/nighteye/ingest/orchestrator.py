@@ -416,6 +416,7 @@ def ingest_evidence(
     case_id: str,
     examiner: str,
     tool_filter: str | None = None,
+    force_reingest: bool = False,
 ) -> dict[str, Any]:
     """High-level wrapper for the entire ingest process.
 
@@ -471,7 +472,7 @@ def ingest_evidence(
     from nighteye.ingest.opensearch_client import NightEyeOSClient
 
     client = NightEyeOSClient()
-    result = execute_ingest_plan(plan, client)
+    result = execute_ingest_plan(plan, client, force_reingest=force_reingest)
 
     stats = {
         "files_processed": len(plan.groups),
