@@ -147,6 +147,8 @@ def execute_ingest_plan(
             group.error = str(exc)
             result.groups_failed += 1
             logger.error("Group %s failed: %s", group.host, exc, exc_info=True)
+            # Reset shard breaker so downstream groups can try
+            client.reset_breaker()
         finally:
             # Re-enable standard refresh interval (1s) and record duration
             try:

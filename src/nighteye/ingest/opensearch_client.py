@@ -225,11 +225,12 @@ class NightEyeOSClient:
                 if error_count > 0:
                     self._consecutive_failures += 1
                     logger.warning(
-                        "Bulk batch %d-%d: %d indexed, %d errors",
+                        "Bulk batch %d-%d: %d indexed, %d errors (consecutive: %d/%d)",
                         i, i + len(batch), success, error_count,
+                        self._consecutive_failures, self._config.shard_breaker_threshold,
                     )
                 else:
-                    self._consecutive_failures = 0
+                    self._consecutive_failures = max(0, self._consecutive_failures - 1)  # gradual recovery
 
                 if self._consecutive_failures >= self._config.shard_breaker_threshold:
                     self._breaker_tripped = True
@@ -407,9 +408,21 @@ class NightEyeOSClient:
             )
             logger.info("Set refresh_interval=%s for %s", interval, index)
         except Exception as e:
-            # Ignore 404s (index doesn't exist yet)
-            if "404" in str(e) or "index_not_found_exception" in str(e):
+            # Ignore 404s (index doesn't exist yet) and 429s (rate limited)
+            err_str = str(e)
+            if "404" in err_str or "index_not_found_exception" in err_str:
                 logger.debug("Index %s not found, skipping refresh_interval setting", index)
+            elif "429" in err_str:
+                import time as _time
+                _time.sleep(2)
+                logger.debug("Rate limited on refresh_interval for %s, retrying once", index)
+                try:
+                    self._client.indices.put_settings(
+                        index=index,
+                        body={"index": {"refresh_interval": interval}},
+                    )
+                except Exception:
+                    pass
             else:
                 raise e
 
@@ -596,8 +609,10 @@ class NightEyeOSClient:
             return False
 
     def reset_breaker(self) -> None:
-        """Reset the circuit breaker after resolving issues."""
+        """Reset the circuit breaker. Call between groups to allow recovery."""
+        self._consecutive_failures = 0
         self._breaker_tripped = False
+        logger.debug("Circuit breaker reset")
         self._consecutive_failures = 0
         logger.info("Shard breaker reset")
 
