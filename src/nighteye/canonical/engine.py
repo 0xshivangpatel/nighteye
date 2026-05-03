@@ -510,8 +510,16 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
             for d in docs
         ]
         try:
+            client.reset_breaker()
             client.bulk_index(canonical_index, docs, doc_ids=doc_ids)
             logger.debug("Indexed %d canonical events to %s", len(docs), canonical_index)
+        except RuntimeError as exc:
+            if "breaker" in str(exc).lower():
+                logger.error("Shard breaker tripped indexing to %s — resetting and retrying", canonical_index)
+                client.reset_breaker()
+            else:
+                logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
+                normalizer.stats["errors"] += len(docs)
         except Exception as exc:
             logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
             normalizer.stats["errors"] += len(docs)

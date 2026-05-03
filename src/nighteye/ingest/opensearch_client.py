@@ -237,6 +237,8 @@ class NightEyeOSClient:
                         i, i + len(batch), success, error_count,
                         self._consecutive_failures, self._config.shard_breaker_threshold,
                     )
+                    if error_count < len(batch):
+                        self._consecutive_failures = max(0, self._consecutive_failures - 1)
                 else:
                     self._consecutive_failures = max(0, self._consecutive_failures - 1)  # gradual recovery
 
