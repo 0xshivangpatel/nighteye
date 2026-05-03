@@ -314,14 +314,26 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
     )
 
 
-# Directories whose contents are known benign — skip UNKNOWN files here
-_SKIP_SYSTEM_DIRS: frozenset[str] = frozenset({
+# Directories whose contents are known benign — skip UNKNOWN files here.
+# For .dll files this list is much narrower: DLL search order hijacking means any
+# .dll outside System32/SysWOW64/WinSxS could be a hijack target, even in
+# legitimate app dirs. For .exe files the full list applies since process hollowing
+# is detected via EVTX events (4688), not via EXE files on disk.
+_SKIP_SYSTEM_DIRS_EXE: frozenset[str] = frozenset({
     "windows\\system32", "windows\\syswow64", "windows\\winsxs",
     "windows\\servicing", "windows\\assembly", "windows\\microsoft.net",
     "windows\\softwaredistribution", "windows\\fonts", "windows\\globalization",
     "windows\\resources", "windows\\csc",
     "program files", "program files (x86)", "programdata\\microsoft",
     "programdata\\package cache",
+})
+
+# DLL-specific skip list — only skip truly OS-level DLL paths.
+# Search order hijacking plants malicious DLLs in application dirs,
+# so we keep DLLs everywhere except the Windows system directories.
+_SKIP_SYSTEM_DIRS_DLL: frozenset[str] = frozenset({
+    "windows\\system32", "windows\\syswow64", "windows\\winsxs",
+    "windows\\assembly", "windows\\microsoft.net\\",
 })
 
 # Executable extensions that are always interesting regardless of location
@@ -382,9 +394,10 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
                 return True
 
     # Only skip known system directories AFTER the suspicious check.
-    # A path containing BOTH "system32" AND "temp" will have already
-    # been kept by the suspicious-path check above.
-    for sys_dir in _SKIP_SYSTEM_DIRS:
+    # DLLs use a narrower skip list — search order hijacking can happen
+    # in application directories too.
+    skip_dirs = _SKIP_SYSTEM_DIRS_DLL if ext == ".dll" else _SKIP_SYSTEM_DIRS_EXE
+    for sys_dir in skip_dirs:
         if sys_dir in path_lower:
             return False
 
