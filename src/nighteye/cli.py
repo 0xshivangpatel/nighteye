@@ -279,7 +279,7 @@ def cmd_clusters(args: argparse.Namespace) -> int:
     with connect(case.graph_db, read_only=True) as conn:
         rows = conn.execute(
             """
-            SELECT cluster_id, constructor_name, host, score, strength, status, summary
+            SELECT cluster_id, cluster_type, primary_host, score, strength, status, summary
             FROM clusters WHERE case_id = ?
             ORDER BY score DESC
             """,
@@ -293,7 +293,7 @@ def cmd_clusters(args: argparse.Namespace) -> int:
     print(f"{'ID':<35} {'Constructor':<20} {'Host':<20} {'Score':<8} {'Strength':<12} {'Status':<12}")
     print("-" * 120)
     for r in rows:
-        print(f"{r['cluster_id']:<35} {r['constructor_name']:<20} {r['host']:<20} {r['score']:<8} {r['strength']:<12} {r['status']:<12}")
+        print(f"{r['cluster_id']:<35} {r['cluster_type']:<20} {r['primary_host']:<20} {r['score']:<8} {r['strength']:<12} {r['status']:<12}")
         if args.verbose:
             print(f"  {r['summary']}")
     return 0
