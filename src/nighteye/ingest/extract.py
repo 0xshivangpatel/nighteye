@@ -39,6 +39,10 @@ E01_EXTS: frozenset[str] = frozenset({".e01", ".ex01", ".e02"})
 
 _MARKER_FILENAME = ".nighteye_extracted"
 
+# Per-run cache of paths that failed extraction — don't retry these
+# within the same process lifetime. Cleared on restart.
+_failed_extraction_cache: dict[str, bool] = {}
+
 
 # ============================================================
 # Helpers
@@ -303,21 +307,32 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             extracted[out_dir.resolve()] = None
             continue
 
+        # Skip previously-failed extractions within this run
+        source_key = str(source.resolve())
+        if source_key in _failed_extraction_cache:
+            logger.debug("Skipping previously-failed %s", source.name)
+            continue
+
         if _is_archive(source):
             logger.info("Extracting archive %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
+            else:
+                _failed_extraction_cache[source_key] = True
         elif source.suffix.lower() in E01_EXTS:
             logger.info("Extracting E01 image %s -> %s via ewfmount", source.name, out_dir)
             if _extract_e01(source, out_dir):
                 extracted[out_dir.resolve()] = None
+            else:
+                _failed_extraction_cache[source_key] = True
         elif _is_image(source):
             logger.info("Extracting image %s -> %s", source.name, out_dir)
             if _extract_one(source, out_dir):
                 extracted[out_dir.resolve()] = None
             else:
+                _failed_extraction_cache[source_key] = True
                 logger.warning(
-                    "Could not extract %s with 7zip. Try installing additional tools.", source.name
+                    "Could not extract %s with available tools.", source.name
                 )
 
     if not extracted:

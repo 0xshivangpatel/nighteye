@@ -16,6 +16,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+# Import PE signer at module level so it's not re-imported per file
+try:
+    from nighteye.ingest.python_pe_signer import is_unsigned_pe as _is_unsigned_pe
+except ImportError:
+    _is_unsigned_pe = None
+
 __all__ = [
     "EvidenceType",
     "DetectedEvidence",
@@ -387,9 +393,8 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
         for suspicious in _SUSPICIOUS_PATH_PARTS:
             if suspicious in path_lower:
                 # In a suspicious path — but still skip if signed by a known vendor
-                if ext in (".exe", ".dll", ".sys", ".scr"):
-                    from nighteye.ingest.python_pe_signer import is_unsigned_pe
-                    if not is_unsigned_pe(path):
+                if ext in (".exe", ".dll", ".sys", ".scr") and _is_unsigned_pe is not None:
+                    if not _is_unsigned_pe(path):
                         return False  # Signed by Microsoft/Google/etc. — skip
                 return True
 
@@ -402,11 +407,10 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
             return False
 
     # For executables/documents in non-system, non-suspicious dirs — keep
-    # but still skip if signed by a known vendor (defense in depth)
-    if ext in _UNKNOWN_EXTS:
+    # but still skip if signed by a known vendor
+    if ext in _UNKNOWN_EXTS and _is_unsigned_pe is not None:
         if ext in (".exe", ".dll", ".sys", ".scr"):
-            from nighteye.ingest.python_pe_signer import is_unsigned_pe
-            if not is_unsigned_pe(path):
+            if not _is_unsigned_pe(path):
                 return False
         return True
 
