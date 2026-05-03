@@ -21,6 +21,7 @@ __all__ = [
     "DetectedEvidence",
     "detect_evidence_type",
     "scan_evidence_directory",
+    "is_suspicious_or_forensic",
 ]
 
 
@@ -311,6 +312,78 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
         size_bytes=size,
         note=f"Unrecognized file type: {ext or '(no extension)'}",
     )
+
+
+# Directories whose contents are known benign — skip UNKNOWN files here
+_SKIP_SYSTEM_DIRS: frozenset[str] = frozenset({
+    "windows\\system32", "windows\\syswow64", "windows\\winsxs",
+    "windows\\servicing", "windows\\assembly", "windows\\microsoft.net",
+    "windows\\softwaredistribution", "windows\\fonts", "windows\\globalization",
+    "windows\\resources", "windows\\csc",
+    "program files", "program files (x86)", "programdata\\microsoft",
+    "programdata\\package cache",
+})
+
+# Executable extensions that are always interesting regardless of location
+_ALWAYS_INTERESTING_EXTS: frozenset[str] = frozenset({
+    ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".hta", ".wsf",
+})
+
+# Extensions that are only interesting in suspicious directories
+_UNKNOWN_EXTS: frozenset[str] = frozenset({
+    ".exe", ".dll", ".sys", ".scr", ".msi", ".dat",
+    ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".rtf",
+    ".xml", ".cfg", ".ini", ".inf",
+})
+
+# Substrings that indicate a suspicious location for executables
+_SUSPICIOUS_PATH_PARTS: tuple[str, ...] = (
+    "\\temp\\", "\\tmp\\", "\\downloads\\", "\\appdata\\",
+    "\\programdata\\", "\\users\\public\\", "\\recycler\\", "\\recycle.bin",
+    "\\startup\\", "\\start menu\\programs\\startup",
+    "\\tasks\\", "\\prefetch\\", "\\windows\\tasks",
+    "\\perflogs\\", "\\system volume information",
+)
+
+
+def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
+    """Return True if this file should be ingested.
+
+    Known forensic artifacts (evtx, registry, mft, prefetch, etc.) always pass.
+    UNKNOWN files (.exe, .dll, .sys, .bat, etc.) pass only if:
+      - They're scripts (.bat/.ps1/.vbs/.js) — always interesting
+      - They're in suspicious directories (Temp, AppData, Downloads, etc.)
+      - They're NOT in known benign system directories
+
+    This filters out millions of harmless Windows system files while
+    retaining executables in unusual locations that could be malware.
+    """
+    # Always ingest known forensic types
+    if evidence_type != EvidenceType.UNKNOWN:
+        return True
+
+    path_lower = str(path).lower().replace("\\", "/")
+    ext = path.suffix.lower()
+
+    # Scripts are always suspicious — they don't belong in system dirs
+    if ext in _ALWAYS_INTERESTING_EXTS:
+        return True
+
+    # Skip files in known system directories
+    for sys_dir in _SKIP_SYSTEM_DIRS:
+        if sys_dir in path_lower:
+            return False
+
+    # For executables/documents: only ingest from suspicious locations
+    if ext in _UNKNOWN_EXTS:
+        for suspicious in _SUSPICIOUS_PATH_PARTS:
+            if suspicious in path_lower:
+                return True
+        # Not in a suspicious location — skip
+        return False
+
+    # All other unknown extensions: ingest (they might be relevant)
+    return True
 
 
 def scan_evidence_directory(root: Path) -> list[DetectedEvidence]:

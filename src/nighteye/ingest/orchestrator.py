@@ -38,6 +38,7 @@ from nighteye.ingest.dispatch import (
     DetectedEvidence,
     EvidenceType,
     detect_evidence_type,
+    is_suspicious_or_forensic,
 )
 from nighteye.case import get_case_dir
 from nighteye.ingest.ecs import make_index_name
@@ -342,6 +343,9 @@ def build_ingest_plan(
                     if item.suffix.lower() in archive_exts:
                         continue
                     detected = detect_evidence_type(item)
+                    # Filter: skip known-system UNKNOWN files (.exe from System32 etc.)
+                    if not is_suspicious_or_forensic(detected.evidence_type, item):
+                        continue
                     discovered.append((detected, root))
                 elif item.is_dir():
                     # Check if directory contains recognized evidence bundles
