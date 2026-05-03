@@ -102,9 +102,51 @@ _ACTION_TO_CANONICAL: dict[str, CanonicalType] = {
     "sigma-alert": CanonicalType.ALERT,
 }
 
-# ============================================================
+    # ============================================================
 # Normalizer
 # ============================================================
+
+# Map metadata doc event codes to canonical types based on artifact type
+_METADATA_CODE_TO_CANONICAL: dict[str, CanonicalType] = {
+    "evtx": CanonicalType.PROCESS_EXECUTION,
+    "evtx_folder": CanonicalType.PROCESS_EXECUTION,
+    "registry": CanonicalType.REGISTRY_MODIFICATION,
+    "mft": CanonicalType.FILE_MODIFICATION,
+    "prefetch": CanonicalType.FILE_CREATION,
+    "lnk": CanonicalType.FILE_CREATION,
+    "memory": CanonicalType.PROCESS_EXECUTION,
+    "pcap": CanonicalType.NETWORK_CONNECTION,
+    "win_timeline": CanonicalType.ALERT,
+    "jumplist": CanonicalType.FILE_CREATION,
+    "apache_log": CanonicalType.NETWORK_CONNECTION,
+    "auth_log": CanonicalType.AUTHENTICATION,
+    "kape_zip": CanonicalType.ALERT,
+    "e01": CanonicalType.ALERT,
+}
+
+
+def _metadata_to_canonical(event_code: str, doc: dict[str, Any]) -> CanonicalType | None:
+    """Map a metadata doc's event code to a canonical type."""
+    if not event_code:
+        # Try to infer from file extension in path
+        path = (doc.get("file", {}).get("path", "") or "").lower()
+        if path.endswith(".evtx"):
+            return CanonicalType.PROCESS_EXECUTION
+        if any(path.endswith(h) for h in ("sam", "system", "software", "security", "ntuser.dat")):
+            return CanonicalType.REGISTRY_MODIFICATION
+        if path.endswith((".pf", ".dll", ".exe", ".sys", ".msi")):
+            return CanonicalType.FILE_CREATION
+        return None
+
+    ct = _METADATA_CODE_TO_CANONICAL.get(event_code.lower())
+    if ct:
+        return ct
+
+    # Generic fallback: anything with a file path is a file event
+    if doc.get("file", {}).get("path"):
+        return CanonicalType.FILE_CREATION
+
+    return None
 
 class CanonicalNormalizer:
     """Converts raw ECS documents to CanonicalEvents."""
@@ -217,6 +259,9 @@ class CanonicalNormalizer:
         category = doc.get("event", {}).get("category", "")
         if isinstance(category, list):
             category = category[0] if category else ""
+        if category == "artifact":
+            # Metadata doc — map evidence type to closest canonical type
+            return _metadata_to_canonical(doc.get("event", {}).get("code", ""), doc)
         category_map = {
             "authentication": CanonicalType.AUTHENTICATION,
             "process": CanonicalType.PROCESS_EXECUTION,

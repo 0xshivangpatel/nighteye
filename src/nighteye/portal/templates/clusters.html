@@ -27,17 +27,19 @@
         </thead>
         <tbody class="divide-y">
             {% for cluster in clusters %}
-            <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/cluster/{{ cluster.id }}'">
-                <td class="px-6 py-4 font-mono text-cyan-600">{{ cluster.id }}</td>
-                <td class="px-6 py-4 font-medium">{{ cluster.host }}</td>
-                <td class="px-6 py-4">{{ cluster.type }}</td>
+            <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/clusters/{{ cluster.cluster_id }}'">
+                <td class="px-6 py-4 font-mono text-cyan-600">{{ cluster.cluster_id[:16] }}</td>
+                <td class="px-6 py-4 font-medium">{{ cluster.primary_host }}</td>
+                <td class="px-6 py-4">{{ cluster.cluster_type }}</td>
                 <td class="px-6 py-4">
-                    {% if cluster.tier == 'STRONG' %}
+                    {% if cluster.strength == 'STRONG' %}
                     <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-semibold">STRONG</span>
-                    {% elif cluster.tier == 'MODERATE' %}
+                    {% elif cluster.strength == 'MODERATE' %}
                     <span class="px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-semibold">MODERATE</span>
+                    {% elif cluster.strength == 'WEAK' %}
+                    <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-semibold">WEAK</span>
                     {% else %}
-                    <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-semibold">{{ cluster.tier }}</span>
+                    <span class="px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs font-semibold">{{ cluster.strength }}</span>
                     {% endif %}
                 </td>
                 <td class="px-6 py-4">{{ cluster.score }}/100</td>

@@ -381,7 +381,7 @@ def _metadata_doc(
         nighteye_source_file=str(path),
         nighteye_audit_id=audit_id,
         nighteye_parser="metadata",
-        nighteye_canonical_type=evidence_type.value.upper(),
+        nighteye_canonical_type=evidence_type.value,
         extra={
             "file.name": path.name,
             "file.path": str(path),

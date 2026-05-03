@@ -361,12 +361,12 @@ def create_portal_app(
         try:
             case_id = _get_case_id()
             with _get_db() as conn:
-                # Get entities
+                # Get entities — limit for diagram readability
                 entity_rows = conn.execute(
                     """
                     SELECT entity_id, entity_type, canonical_key, properties, first_seen, last_seen
                     FROM entities WHERE case_id = ?
-                    LIMIT 500
+                    LIMIT 100
                     """,
                     (case_id,),
                 ).fetchall()
