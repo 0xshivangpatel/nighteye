@@ -17,6 +17,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.db import connect, execute_with_retry, transaction
+from nighteye.ingest.ecs import case_index_pattern
 
 __all__ = [
     "GraphEngine",
@@ -367,7 +368,9 @@ def build_graph_from_canonical(client, case_id: str, db_path: str) -> dict[str, 
     engine = GraphEngine(db_path)
     stats = {"entities_created": 0, "edges_created": 0, "events_processed": 0, "errors": 0}
 
-    canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
+    canonical_indices = client.list_indices(
+        case_index_pattern(case_id, "canonical-*")
+    )
 
     for index_name in canonical_indices:
         logger.info("Building graph from %s", index_name)

@@ -14,7 +14,12 @@ import logging
 from typing import Any, Iterator
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
-from nighteye.ingest.ecs import compute_doc_id, make_index_name, normalize_timestamp
+from nighteye.ingest.ecs import (
+    case_index_pattern,
+    compute_doc_id,
+    make_index_name,
+    normalize_timestamp,
+)
 
 __all__ = ["run_normalization_pass", "normalize_document", "CanonicalNormalizer"]
 
@@ -374,8 +379,10 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
     """
     normalizer = CanonicalNormalizer(case_id)
 
-    # Find all raw indices for this case (exclude canonical and clusters)
-    all_indices = client.list_indices(f"case-{case_id}-*")
+    # Find all raw indices for this case (exclude canonical and clusters).
+    # MUST use case_index_pattern so the wildcard matches OpenSearch's
+    # auto-lowercased index names — see ecs.case_index_pattern docstring.
+    all_indices = client.list_indices(case_index_pattern(case_id))
     raw_indices = [
         idx for idx in all_indices
         if "-canonical-" not in idx and "-clusters" not in idx
@@ -413,9 +420,17 @@ def run_normalization_pass(client, case_id: str) -> dict[str, Any]:
             logger.error("Failed to index canonical docs to %s: %s", canonical_index, exc)
             normalizer.stats["errors"] += len(docs)
 
+    case_prefix = case_index_pattern(case_id, "")  # ends in "case-<lc>-"
+    # case_index_pattern with empty suffix returns "case-<lc>-*"; strip the *
+    if case_prefix.endswith("-*"):
+        case_prefix = case_prefix[:-1]  # "case-<lc>-"
+
     for index_name in index_iter:
         if _tqdm_avail:
-            index_iter.set_postfix(idx=index_name.split(f"case-{case_id}-")[-1][:30], docs=normalizer.stats["canonical_docs_created"])
+            index_iter.set_postfix(
+                idx=index_name.split(case_prefix)[-1][:30],
+                docs=normalizer.stats["canonical_docs_created"],
+            )
 
         try:
             for page in client.scroll_search_iter(

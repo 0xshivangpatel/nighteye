@@ -11,7 +11,7 @@ from typing import Any
 
 from nighteye.db import connect, execute_with_retry
 from nighteye.ingest.opensearch_client import NightEyeOSClient
-from nighteye.ingest.ecs import make_index_name
+from nighteye.ingest.ecs import case_index_pattern, make_index_name
 
 __all__ = [
     "search_evidence",
@@ -98,8 +98,9 @@ def search_evidence(
 
     dsl = {"bool": {"must": must_clauses}}
 
-    # Search across all indices for this case
-    indices = client.list_indices(f"case-{case_id}-*")
+    # Search across all indices for this case (case-insensitive helper —
+    # the wildcard must match OpenSearch's lowercased index names).
+    indices = client.list_indices(case_index_pattern(case_id))
     if not indices:
         return {"results": [], "total": 0, "indices_searched": 0}
 
@@ -169,7 +170,7 @@ def list_evidence_types(
     if not client:
         client = NightEyeOSClient()
 
-    indices = client.list_indices(f"case-{case_id}-*")
+    indices = client.list_indices(case_index_pattern(case_id))
     types = set()
     host_counts: dict[str, int] = {}
 
@@ -204,7 +205,7 @@ def get_host_timeline(
     if not client:
         client = NightEyeOSClient()
 
-    indices = client.list_indices(f"case-{case_id}-*-{host}")
+    indices = client.list_indices(case_index_pattern(case_id, f"*-{host}"))
 
     all_events = []
     for index in indices:

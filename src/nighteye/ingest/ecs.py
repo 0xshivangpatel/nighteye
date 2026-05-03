@@ -19,6 +19,7 @@ __all__ = [
     "ECS_CORE_FIELDS",
     "NIGHTEYE_FIELDS",
     "build_ecs_doc",
+    "case_index_pattern",
     "compute_doc_id",
     "make_index_name",
     "normalize_timestamp",
@@ -81,6 +82,16 @@ NIGHTEYE_FIELDS: dict[str, str] = {
 # ============================================================
 
 
+def _sanitize_index_component(s: str) -> str:
+    """Lowercase + dash-encode a string for safe use in an OpenSearch index name.
+
+    OpenSearch index names are case-insensitive and disallow many characters;
+    we always lowercase and replace whitespace/slashes with hyphens. This is
+    the canonical sanitizer for any index-name component.
+    """
+    return s.lower().replace(" ", "-").replace("/", "-").replace("\\", "-")
+
+
 def make_index_name(case_id: str, artifact_type: str, host: str) -> str:
     """Build an OpenSearch index name following the NightEye convention.
 
@@ -92,10 +103,42 @@ def make_index_name(case_id: str, artifact_type: str, host: str) -> str:
         >>> make_index_name("INC-2026-001", "evtx", "DC01")
         'case-inc-2026-001-evtx-dc01'
     """
-    def _sanitize(s: str) -> str:
-        return s.lower().replace(" ", "-").replace("/", "-").replace("\\", "-")
+    return (
+        f"case-{_sanitize_index_component(case_id)}"
+        f"-{_sanitize_index_component(artifact_type)}"
+        f"-{_sanitize_index_component(host)}"
+    )
 
-    return f"case-{_sanitize(case_id)}-{_sanitize(artifact_type)}-{_sanitize(host)}"
+
+def case_index_pattern(case_id: str, suffix: str = "*") -> str:
+    """Build a case-scoped index pattern using the same sanitizer as
+    :func:`make_index_name`.
+
+    This is the **only** correct way to compose a wildcard for
+    ``client.list_indices()`` or scroll search across a case — naive
+    ``f"case-{case_id}-*"`` interpolation breaks because OpenSearch
+    auto-lowercases index names at creation time, while the case_id
+    stored in ``CASE.yaml`` typically has mixed case (``INC-2026-...``).
+    The wildcard would then never match the real indices.
+
+    Examples:
+        >>> case_index_pattern("INC-2026-001")
+        'case-inc-2026-001-*'
+        >>> case_index_pattern("INC-2026-001", "canonical-*")
+        'case-inc-2026-001-canonical-*'
+        >>> case_index_pattern("INC-2026-001", "evtx-DC01")
+        'case-inc-2026-001-evtx-dc01'
+    """
+    base = f"case-{_sanitize_index_component(case_id)}"
+    if not suffix or suffix == "*":
+        return f"{base}-*"
+    # The suffix is allowed to contain wildcards; sanitize the
+    # non-wildcard segments. Splitting on '*' preserves the wildcards.
+    sanitized = "*".join(
+        _sanitize_index_component(seg) if seg else seg
+        for seg in suffix.split("*")
+    )
+    return f"{base}-{sanitized}"
 
 
 # ============================================================

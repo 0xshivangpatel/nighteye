@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from nighteye.canonical.types import CanonicalEvent
 from nighteye.constructors.scoring import calculate_cluster_score, get_tier, ClusterTier
+from nighteye.ingest.ecs import case_index_pattern
 
 __all__ = [
     "TriggerRule",
@@ -303,7 +304,9 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
     # Per-host event reservoir for supporting-signal context
     events_by_host: dict[str, list[CanonicalEvent]] = {}
 
-    canonical_indices = client.list_indices(f"case-{case_id}-canonical-*")
+    # Use case_index_pattern so the wildcard matches the lowercase
+    # OpenSearch index names regardless of case_id casing.
+    canonical_indices = client.list_indices(case_index_pattern(case_id, "canonical-*"))
 
     try:
         from tqdm import tqdm
