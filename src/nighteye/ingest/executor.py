@@ -62,32 +62,31 @@ def execute_ingest_plan(
     result = IngestResult(plan=plan)
     start_time = time.time()
     modified_indices: set[str] = set()
+    total_files = sum(len(g.files) for g in plan.groups)
+    total_bytes = sum(g.total_bytes for g in plan.groups)
 
     try:
         from tqdm import tqdm
 
-        # Show per-group progress with host/type info
-        group_iter = tqdm(
-            plan.groups,
+        # Main progress bar: group-level completion
+        group_pbar = tqdm(
+            total=len(plan.groups),
             desc="Ingesting",
             unit="group",
             dynamic_ncols=True,
-            postfix={"host": "", "type": "", "docs": 0},
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
         )
-    except ImportError:
-        group_iter = plan.groups
-        _tqdm_available = False
-    else:
         _tqdm_available = True
+    except ImportError:
+        group_pbar = None
+        _tqdm_available = False
 
-    for group in group_iter:
+    # Track docs/errors/file counts
+    files_done = 0
+
+    for group in plan.groups:
         group_start = time.time()
         group.status = "ingesting"
-
-        if _tqdm_available:
-            group_iter.set_postfix(
-                host=group.host, type=group.artifact_type.value, docs="..."
-            )
 
         logger.info(
             "Ingesting group: %s (%s, %d files)",
@@ -101,28 +100,12 @@ def execute_ingest_plan(
             client.set_refresh_interval(group.index_name, "-1")
 
             # Stream all files in this group into a single bulk ingest
-            doc_stream = _stream_group_docs(group, plan.case_id)
+            doc_stream = _stream_group_docs(group, plan.case_id, group_pbar)
 
-            # Wrap with a counter-based progress bar for large groups
-            if _tqdm_available:
-                doc_counter = tqdm(
-                    doc_stream,
-                    desc=f"  {group.host}/{group.artifact_type.value}",
-                    unit="docs",
-                    unit_scale=True,
-                    dynamic_ncols=True,
-                    leave=False,
-                )
-                success_count, error_count = client.bulk_index_iter(
-                    index_name=group.index_name,
-                    documents=doc_counter,
-                )
-                doc_counter.close()
-            else:
-                success_count, error_count = client.bulk_index_iter(
-                    index_name=group.index_name,
-                    documents=doc_stream,
-                )
+            success_count, error_count = client.bulk_index_iter(
+                index_name=group.index_name,
+                documents=doc_stream,
+            )
 
             group.doc_count = success_count
             result.total_docs_indexed += success_count
@@ -134,13 +117,14 @@ def execute_ingest_plan(
             group.status = "done"
             result.groups_completed += 1
             modified_indices.add(group.index_name)
+            files_done += len(group.files)
 
-            if _tqdm_available:
-                group_iter.set_postfix(
-                    host=group.host,
-                    type=f"{group.artifact_type.value} ✓",
-                    docs=success_count,
+            if group_pbar:
+                group_pbar.set_postfix_str(
+                    f"host={group.host} type={group.artifact_type.value} ✓ docs={success_count:,} "
+                    f"files={files_done}/{total_files} total={result.total_docs_indexed:,}"
                 )
+                group_pbar.update(1)
 
         except Exception as exc:
             group.status = "failed"
@@ -460,8 +444,14 @@ def _ez_tool_to_docs(
             yield doc
 
 
-def _stream_group_docs(group: IngestGroup, case_id: str) -> Iterator[dict[str, Any]]:
-    """Yield all ECS documents from all files in a group."""
+def _stream_group_docs(group: IngestGroup, case_id: str, pbar: Any = None) -> Iterator[dict[str, Any]]:
+    """Yield all ECS documents from all files in a group.
+    
+    Args:
+        group: The ingest group to process.
+        case_id: Case ID.
+        pbar: Optional tqdm progress bar to update per document.
+    """
     artifact_type = group.artifact_type
     host_name = group.host
 
