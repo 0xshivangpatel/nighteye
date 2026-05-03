@@ -53,7 +53,7 @@ _KNOWN_SIGNER_SUBSTRINGS: frozenset[str] = frozenset({
     "canonical",  # Ubuntu
     "red hat",
     "suse",
-])
+})
 
 # PE file extensions eligible for signature check
 _PE_EXTENSIONS: frozenset[str] = frozenset({".exe", ".dll", ".sys", ".scr", ".msi"})
