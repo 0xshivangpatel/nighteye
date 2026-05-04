@@ -45,7 +45,7 @@ def is_tool_available(evidence_type: EvidenceType) -> bool:
         return True
         
     # Check common SIFT/Linux locations explicitly
-    extra_paths = ["/usr/local/bin", "/opt/zimmerman", "/opt/eztools"]
+    extra_paths = ["/usr/local/bin", "/opt/zimmerman", "/opt/zimmermantools", "/opt/eztools"]
     for p in extra_paths:
         for ext in ["", ".exe", ".sh"]:
             if (Path(p) / f"{tool_name}{ext}").exists():

@@ -452,7 +452,7 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
           f"{graph_stats['edges_created']} edges in {t1 - t0:.0f}s")
 
     # Step 4: Cluster
-    print("\n[4/4] Running behavioral clustering...")
+    print("\n[4/5] Running behavioral clustering...")
     t0 = _time.time()
     cluster_stats = run_all_constructors(client, case.id, case.graph_db)
     t1 = _time.time()
@@ -460,6 +460,18 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
           f"({cluster_stats.get('high_confidence', 0)} high) in {t1 - t0:.0f}s")
     if cluster_stats.get("anti_forensic", 0) > 0:
         print(f"  → {cluster_stats['anti_forensic']} anti-forensic indicators detected")
+
+    # Step 5: Cleanup & Seed
+    print("\n[5/5] Cleaning up clusters and seeding hypotheses...")
+    t0 = _time.time()
+    from nighteye.constructors.cleanup import run_cluster_cleanup
+    cleanup_stats = run_cluster_cleanup(case.graph_db, case.id, case.examiner)
+    t1 = _time.time()
+    print(f"  → {cleanup_stats['clusters_collapsed']} noise clusters collapsed into "
+          f"{cleanup_stats['aggregates_created']} aggregates")
+    print(f"  → {cleanup_stats['clusters_kept']} actionable clusters retained")
+    print(f"  → {cleanup_stats['hypotheses_seeded']} hypotheses seeded")
+    print(f"  → Cleanup complete in {t1 - t0:.0f}s")
 
     total_end = _time.time()
     print("\n" + "=" * 60)
