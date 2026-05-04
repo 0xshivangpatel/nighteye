@@ -87,12 +87,19 @@ def _plaso_to_event_action(sourcetype: str) -> str:
 # ------------------------------------------------------------------
 # XML helpers for WinEVTX extra column
 # ------------------------------------------------------------------
-_XML_EVENT_ID_RE = re.compile(r"<EventID>(\d+)</EventID>")
+_XML_EVENT_ID_RE = re.compile(r"<EventID(?:\s[^>]*)?>(\d+)</EventID>")
 _XML_COMPUTER_RE = re.compile(r"<Computer>([^<]+)</Computer>")
 _XML_PID_RE = re.compile(r'ProcessID="(\d+)"')
 _XML_SID_RE = re.compile(r'UserID="([^"]+)"')
 _XML_CHANNEL_RE = re.compile(r"<Channel>([^<]+)</Channel>")
 _XML_TIME_RE = re.compile(r'SystemTime="([^"]+)"')
+
+# Generic <Data Name="Foo">value</Data> extractor — used to pull
+# LogonType, IpAddress, TargetUserName, ProcessCommandLine, etc. out of the
+# WinEVTX EventData block that Plaso preserves verbatim in the `extra` column.
+_XML_DATA_RE = re.compile(
+    r'<Data\s+Name="([^"]+)"\s*>([^<]*)</Data>', re.IGNORECASE
+)
 
 
 def _extract_xml_field(text: str, pattern: re.Pattern) -> str:
@@ -100,14 +107,109 @@ def _extract_xml_field(text: str, pattern: re.Pattern) -> str:
     return m.group(1) if m else ""
 
 
+def _extract_event_data(text: str) -> dict[str, str]:
+    """Pull every <Data Name="X">Y</Data> pair out of an EVTX EventData blob."""
+    if not text:
+        return {}
+    data: dict[str, str] = {}
+    for m in _XML_DATA_RE.finditer(text):
+        name = m.group(1).strip()
+        value = m.group(2).strip()
+        if name and value and value != "-":
+            data[name] = value
+    return data
+
+
 # ------------------------------------------------------------------
 # Row -> ECS document
 # ------------------------------------------------------------------
+
+# Map Plaso EVTX EventID → (event_action, event_category list) so the
+# canonical normalizer can route each event to the correct CanonicalType
+# without falling through to generic category buckets.
+_EVTX_EVENT_ROUTING: dict[str, tuple[str, list[str]]] = {
+    # Authentication
+    "4624": ("logon-success", ["authentication"]),
+    "4625": ("logon-failure", ["authentication"]),
+    "4634": ("logoff", ["authentication"]),
+    "4647": ("logoff", ["authentication"]),
+    "4648": ("logon-explicit", ["authentication"]),
+    "4672": ("special-privileges", ["authentication"]),
+    "4768": ("kerberos-tgt-request", ["authentication"]),
+    "4769": ("kerberos-tgs-request", ["authentication"]),
+    "4776": ("ntlm-credential-validation", ["authentication"]),
+    "4778": ("session-reconnected", ["authentication"]),
+    "4779": ("session-disconnected", ["authentication"]),
+    # Process execution
+    "4688": ("process-created", ["process"]),
+    "4689": ("process-terminated", ["process"]),
+    "1": ("process-created", ["process"]),  # Sysmon
+    # Network
+    "5156": ("network-connection-allowed", ["network"]),
+    "5157": ("network-connection-blocked", ["network"]),
+    "3": ("network-connection-allowed", ["network"]),  # Sysmon
+    # Service / Task
+    "7045": ("service-installed", ["configuration"]),
+    "7036": ("service-state-change", ["configuration"]),
+    "4697": ("service-installed", ["configuration"]),
+    "4698": ("scheduled-task-created", ["configuration"]),
+    "4702": ("scheduled-task-updated", ["configuration"]),
+    # Registry
+    "4657": ("registry-key-modified", ["registry"]),
+    # File / object access
+    "4663": ("object-access-attempt", ["file"]),
+    "4656": ("handle-requested", ["file"]),
+    # Log clearing
+    "1102": ("log-cleared", ["iam"]),
+    "104":  ("log-cleared", ["iam"]),
+    # AD replication
+    "4934": ("ad-replication-attempt", ["iam"]),
+    "4935": ("ad-replication-failure", ["iam"]),
+    # PowerShell
+    "4103": ("powershell-pipeline", ["process"]),
+    "4104": ("script-block-logged", ["process"]),
+    "4105": ("script-block-started", ["process"]),
+}
+
+# Map Plaso non-EVTX sourcetype → (event_code, event_action, event_category).
+# These give the normalizer enough to bucket every row correctly without
+# stuffing file paths into command_line.
+_SOURCETYPE_ROUTING: dict[str, tuple[str, str, list[str]]] = {
+    "WinPrefetch":              ("prefetch",  "prefetch-execution",     ["process"]),
+    "AppCompatCache Registry Entry": ("shimcache", "shimcache-execution", ["process"]),
+    "File entry shell item":    ("shellitem", "file-accessed",          ["file"]),
+    "MSIE Cache File URL record": ("webhist", "web-history",            ["network"]),
+    "Firefox History":           ("webhist", "web-history",             ["network"]),
+    "Firefox Cache":             ("webhist", "web-cache",               ["network"]),
+    "File stat":                 ("filestat", "file-modified",          ["file"]),
+    "NTFS USN change":           ("usn",     "file-modified",           ["file"]),
+}
+
+
+def _route_sourcetype(sourcetype: str) -> tuple[str, str, list[str]]:
+    """Return (event_code, event_action, event_category) for a Plaso sourcetype."""
+    if sourcetype in _SOURCETYPE_ROUTING:
+        return _SOURCETYPE_ROUTING[sourcetype]
+    # Fallback for unrecognized sourcetypes — keep them as artifacts but
+    # do not pretend they are processes/auth/network events.
+    return ("artifact", "artifact", ["artifact"])
+
 
 def _parse_plaso_row(row: dict[str, str], default_host: str) -> dict[str, Any] | None:
     """Convert a Plaso CSV row into an ECS document.
 
     Returns *None* when the row is not useful (missing timestamp, etc.).
+
+    Critical fidelity rules:
+    - `process.command_line` is only populated when the row is an actual
+      process-execution event (WinEVTX 4688/Sysmon 1, or where Plaso
+      preserved a real ProcessCommandLine in EventData). Putting file
+      paths or descriptive 'short' strings here historically caused
+      DefenseEvasion / AMSI bypass triggers to fire on benign paths
+      containing substrings like 'etw' or 'Network'.
+    - WinEVTX rows are routed by EventID, not by category-bucket
+      heuristics. The first category in the list is what the canonical
+      normalizer's category_map fallback uses.
     """
     date_str = str(row.get("date") or "").strip()
     time_str = str(row.get("time") or "").strip()
@@ -125,25 +227,10 @@ def _parse_plaso_row(row: dict[str, str], default_host: str) -> dict[str, Any] |
     sourcetype = str(row.get("sourcetype") or "").strip()
     extra = str(row.get("extra") or "")
     short = str(row.get("short") or "")
+    desc = str(row.get("desc") or "")
     filename = str(row.get("filename") or "")
     user = str(row.get("user") or "").strip()
     host = _canonical_host(str(row.get("host") or ""), default_host)
-
-    # WinEVTX: grab EventID / PID / SID / Channel from XML snippet
-    event_code = ""
-    pid: int | None = None
-    user_sid = ""
-    channel = ""
-    if sourcetype == "WinEVTX" and extra:
-        event_code = _extract_xml_field(extra, _XML_EVENT_ID_RE)
-        pid_str = _extract_xml_field(extra, _XML_PID_RE)
-        if pid_str.isdigit():
-            pid = int(pid_str)
-        user_sid = _extract_xml_field(extra, _XML_SID_RE)
-        channel = _extract_xml_field(extra, _XML_CHANNEL_RE)
-        # Prefer SID-derived user when user column is generic
-        if user_sid and (not user or user in ("-", "systemprofile")):
-            user = user_sid
 
     # File-system rows often carry a TSK filename like TSK:/Windows/...
     file_path = ""
@@ -152,23 +239,91 @@ def _parse_plaso_row(row: dict[str, str], default_host: str) -> dict[str, Any] |
     elif filename:
         file_path = filename
 
+    # Defaults — overridden per sourcetype below
+    event_code: str = ""
+    event_action: str = ""
+    event_category: list[str] = ["artifact"]
+    pid: int | None = None
+    process_name: str = ""
+    process_command_line: str = ""
+    process_executable: str = ""
+    source_ip: str = ""
+    destination_ip: str = ""
+    destination_port: int | None = None
+    network_protocol: str = ""
+    user_sid = ""
+    channel = ""
+    logon_type: str = ""
+    target_user: str = ""
+    workstation: str = ""
+    event_data: dict[str, str] = {}
+
+    if sourcetype == "WinEVTX":
+        # 1. EventID drives the canonical type — extract it first.
+        event_code = _extract_xml_field(extra, _XML_EVENT_ID_RE)
+        pid_str = _extract_xml_field(extra, _XML_PID_RE)
+        if pid_str.isdigit():
+            pid = int(pid_str)
+        user_sid = _extract_xml_field(extra, _XML_SID_RE)
+        channel = _extract_xml_field(extra, _XML_CHANNEL_RE)
+
+        # 2. Pull <Data Name="X">Y</Data> EventData entries.
+        event_data = _extract_event_data(extra)
+        logon_type = event_data.get("LogonType", "")
+        target_user = event_data.get("TargetUserName", "") or event_data.get("SubjectUserName", "")
+        workstation = event_data.get("WorkstationName", "")
+        ed_ip = event_data.get("IpAddress", "")
+        if ed_ip and ed_ip not in ("-", "::1", "127.0.0.1"):
+            source_ip = ed_ip
+        ed_proc = event_data.get("ProcessName", "")
+        if ed_proc:
+            process_executable = ed_proc
+            process_name = ed_proc.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        ed_cmd = event_data.get("CommandLine", "") or event_data.get("ProcessCommandLine", "")
+        if ed_cmd:
+            process_command_line = ed_cmd[:2048]
+
+        # 3. Prefer TargetUserName over the generic user column for auth events.
+        if target_user and (not user or user in ("-", "systemprofile", "SYSTEM")):
+            user = target_user
+        elif user_sid and (not user or user in ("-", "systemprofile")):
+            user = user_sid
+
+        # 4. Route by EventID first; fall back to a generic 'process' bucket
+        #    only if we cannot identify the EventID.
+        routing = _EVTX_EVENT_ROUTING.get(event_code)
+        if routing:
+            event_action, event_category = routing
+        else:
+            event_action = "evtx-unknown"
+            event_category = ["process"]
+    else:
+        # Non-EVTX rows: route by sourcetype, never put paths in command_line.
+        event_code, event_action, event_category = _route_sourcetype(sourcetype)
+        # Some sourcetypes have an executable name in `desc` (e.g. shimcache,
+        # prefetch, shellitem). Use the FILE PATH only — never the 'short' text.
+        if file_path and event_category and event_category[0] == "process":
+            process_executable = file_path
+            process_name = file_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
     # Build ECS doc
     return build_ecs_doc(
         timestamp=ts,
         host_name=host,
-        event_code=event_code or _plaso_to_event_action(sourcetype),
-        event_action=_plaso_to_event_action(sourcetype),
-        event_category=["artifact"] if sourcetype != "WinEVTX" else ["process", "authentication", "network", "file"],
+        event_code=event_code or event_action,
+        event_action=event_action or "artifact",
+        event_category=event_category,
         event_outcome="success",
         user_name=user,
         process_pid=pid,
-        process_name="",
-        process_command_line=short[:512],
+        process_name=process_name,
+        process_executable=process_executable,
+        process_command_line=process_command_line,
         file_path=file_path,
-        source_ip="",
-        destination_ip="",
-        destination_port=None,
-        network_protocol="",
+        source_ip=source_ip,
+        destination_ip=destination_ip,
+        destination_port=destination_port,
+        network_protocol=network_protocol,
         nighteye_ingest_id="srl2015-plaso",
         nighteye_source_file=filename,
         nighteye_audit_id="srl2015-plaso",
@@ -176,12 +331,16 @@ def _parse_plaso_row(row: dict[str, str], default_host: str) -> dict[str, Any] |
         nighteye_canonical_type="",
         extra={
             "plaso.sourcetype": sourcetype,
-            "plaso.short": short,
-            "plaso.desc": str(row.get("desc") or "")[:512],
+            "plaso.short": short[:512],
+            "plaso.desc": desc[:512],
             "plaso.channel": channel,
             "plaso.version": str(row.get("version") or ""),
             "plaso.notes": str(row.get("notes") or ""),
             "plaso.format": str(row.get("format") or ""),
+            "winlog.event_data.LogonType": logon_type,
+            "winlog.event_data.TargetUserName": target_user,
+            "winlog.event_data.WorkstationName": workstation,
+            "winlog.event_data.IpAddress": source_ip,
         },
     )
 

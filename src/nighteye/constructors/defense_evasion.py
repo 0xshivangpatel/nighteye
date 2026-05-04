@@ -11,6 +11,7 @@ References:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
@@ -20,20 +21,90 @@ __all__ = ["DefenseEvasionConstructor"]
 
 # ============================================================
 # Trigger Evaluators
+#
+# Pattern guidance: substring matchers fired against `command_line`
+# routinely false-positive on benign file paths and EVTX descriptions
+# that happen to contain short tokens like "etw", "Network", or
+# "disable". Every matcher below uses regex word boundaries plus a
+# verb/intent context so that "Network and Internet.lnk" does not
+# trigger ETW tampering and "DisableNotifications.txt" does not trigger
+# EDR disablement.
 # ============================================================
+
+# Patterns are pre-compiled for speed since they run over every event.
+_AMSI_BYPASS_RE = re.compile(
+    r"\b(?:"
+    r"amsiinitfailed|amsiutils|amsiscanbuffer|amscontext|"
+    r"\[ref\]\.assembly\.gettype|"
+    r"system\.management\.automation\.amsiutils|"
+    r"amsi\s*(?:bypass|patch|disable|hook)|"
+    r"a['`]?m['`]?s['`]?i"
+    r")\b",
+    re.IGNORECASE,
+)
+_OBFUSCATED_PS_RE = re.compile(
+    r"(?:^|\s)-(?:enc|encodedcommand|e)\b|"
+    r"\bfrombase64string\b|"
+    r"\binvoke-expression\s+\(.{40,}\)|"
+    r"\biex\s*\(\s*\[",
+    re.IGNORECASE,
+)
+_ETW_TAMPER_RE = re.compile(
+    r"\b(?:"
+    r"etweventwrite|etweventregister|etwregister|etwreplacefunction|"
+    r"nttraceevent|etwbypass|etwti|"
+    r"(?:patch|disable|hook|bypass|nop|kill)\s+etw|"
+    r"etw\s+(?:patch|disable|hook|bypass|tamper)"
+    r")\b",
+    re.IGNORECASE,
+)
+_EDR_DISABLE_CMD_RE = re.compile(
+    r"\b(?:"
+    r"set-mppreference|add-mppreference|"
+    r"disable\w*\s+(?:windows\s+)?defender|"
+    r"defender\s+(?:disable|stop|exclusion|exclude|tamper)|"
+    r"disablerealtimemonitoring|"
+    r"tamperprotection\s*(?:0|off|false|disable)|"
+    r"real-time\s+protection\s+(?:off|disable)|"
+    r"sc\s+(?:stop|delete|config)\s+(?:windefend|sense|wdnissvc|sentinelagent)|"
+    r"net\s+stop\s+(?:windefend|sense|wdnissvc|sentinelagent)|"
+    r"taskkill[^\n]+(?:msmpeng|sentinelagent|csagent|cyloprotectsvc)|"
+    r"killav|disableav"
+    r")\b",
+    re.IGNORECASE,
+)
+_EDR_DISABLE_REG_RE = re.compile(
+    r"(?:windows\s+defender|microsoft\\windows\s+defender|"
+    r"securityhealthservice|sense|windefend)\b.*\b(?:disable|tamperprotection)",
+    re.IGNORECASE,
+)
+_PROCESS_INJECTION_RE = re.compile(
+    r"\b(?:"
+    r"virtualallocex|writeprocessmemory|createremotethread|"
+    r"ntunmapviewofsection|setthreadcontext|queueuserapc|"
+    r"ntmapviewofsection|reflectiveloader"
+    r")\b",
+    re.IGNORECASE,
+)
+_UAC_BYPASS_RE = re.compile(
+    r"\b(?:"
+    r"fodhelper(?:\.exe)?|computerdefaults(?:\.exe)?|sdclt(?:\.exe)?|"
+    r"eventvwr(?:\.exe)?|cleanmgr(?:\.exe)?|slui(?:\.exe)?|"
+    r"delegateexecute|wsreset(?:\.exe)?|cmstp(?:\.exe)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _is_amsi_bypass(event: CanonicalEvent) -> bool:
     """Detect AMSI (Anti-Malware Scan Interface) bypass."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
-        amsi_indicators = [
-            "amsi", "antimalware", "scan", "bypass",
-            "[ref].assembly.gettype", "system.management.automation.amsiutils",
-            "a'ms'i", "a`m`si", "amsiinitfailed"
-        ]
-        return any(ind in cmd for ind in amsi_indicators)
+        cmd = event.command_line or ""
+        if not cmd:
+            return False
+        return bool(_AMSI_BYPASS_RE.search(cmd))
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
+        name = (event.alert_name or "").lower()
         return "amsi" in name and ("bypass" in name or "tamper" in name)
     return False
 
@@ -43,85 +114,101 @@ def _is_obfuscated_powershell(event: CanonicalEvent) -> bool:
     if event.canonical_type != CanonicalType.PROCESS_EXECUTION:
         return False
     proc = (event.process_name or "").lower()
-    if "powershell" not in proc:
+    cmd = event.command_line or ""
+    if "powershell" not in proc and "pwsh" not in proc:
         return False
-    cmd = (event.command_line or "").lower()
-    obfuscation = ["-enc", "-encodedcommand", "-e ", "-enc ", "frombase64string"]
-    return any(ind in cmd for ind in obfuscation)
+    if not cmd:
+        return False
+    return bool(_OBFUSCATED_PS_RE.search(cmd))
+
 
 def _is_etw_tamper(event: CanonicalEvent) -> bool:
     """Detect ETW (Event Tracing for Windows) tampering."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
-        etw_indicators = [
-            "etw", "eventtracing", "nttraceevent", "e tw",
-            "patch etw", "disable etw", "etwbypass"
-        ]
-        return any(ind in cmd for ind in etw_indicators)
+        cmd = event.command_line or ""
+        if not cmd:
+            return False
+        return bool(_ETW_TAMPER_RE.search(cmd))
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
-        return "etw" in name and ("tamper" in name or "disable" in name)
+        name = (event.alert_name or "").lower()
+        return "etw" in name and ("tamper" in name or "disable" in name or "patch" in name)
     return False
+
 
 def _is_edr_disable(event: CanonicalEvent) -> bool:
     """Detect EDR/AV disablement."""
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
-        edr_indicators = [
-            "defender", "disable", "exclusion", "mppreference",
-            "set-mppreference", "add-mppreference", "tamperprotection",
-            "real-time protection", "disableav", "killav"
-        ]
-        return any(ind in cmd for ind in edr_indicators)
+        cmd = event.command_line or ""
+        if not cmd:
+            return False
+        return bool(_EDR_DISABLE_CMD_RE.search(cmd))
     if event.canonical_type == CanonicalType.REGISTRY_MODIFICATION:
         key = event.registry_key or ""
-        return "windows defender" in key.lower() and "disable" in key.lower()
+        if not key:
+            return False
+        return bool(_EDR_DISABLE_REG_RE.search(key))
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
-        return any(k in name for k in ["defender", "edr", "av disable", "tamper"])
+        name = (event.alert_name or "").lower()
+        return any(k in name for k in ["defender disable", "edr disable", "av disable", "tamper protection"])
     return False
+
 
 def _is_process_injection(event: CanonicalEvent) -> bool:
     """Detect process injection patterns."""
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
+        name = (event.alert_name or "").lower()
         return "process injection" in name or "process hollowing" in name or "apc injection" in name
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
-        injection_indicators = [
-            "virtualallocex", "writeprocessmemory", "createremotethread",
-            "ntunmapviewofsection", "setthreadcontext", "resume thread"
-        ]
-        return any(ind in cmd for ind in injection_indicators)
+        cmd = event.command_line or ""
+        if not cmd:
+            return False
+        return bool(_PROCESS_INJECTION_RE.search(cmd))
     return False
+
 
 def _is_masquerading(event: CanonicalEvent) -> bool:
     """Detect process masquerading."""
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
+        name = (event.alert_name or "").lower()
         return "masquerading" in name or "right-to-left" in name or "spoofed" in name
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        # Check for process name mismatch with image path
-        proc_name = event.process_name or ""
-        proc_path = event.process_path or ""
-        if proc_name and proc_path:
-            # e.g., svchost.exe running from non-system32
-            if "svchost" in proc_name.lower() and "system32" not in proc_path.lower():
+        proc_name = (event.process_name or "").lower()
+        proc_path = (event.process_path or "").lower()
+        if not proc_name or not proc_path:
+            return False
+        # svchost.exe outside System32 → almost always malicious masquerade.
+        if proc_name == "svchost.exe" and "system32" not in proc_path:
+            return True
+        # lsass.exe outside System32, conhost outside System32, etc.
+        if proc_name in {"lsass.exe", "smss.exe", "csrss.exe", "wininit.exe", "services.exe"}:
+            if "system32" not in proc_path:
                 return True
     return False
 
+
 def _is_uac_bypass(event: CanonicalEvent) -> bool:
-    """Detect UAC bypass techniques."""
+    """Detect UAC bypass techniques.
+
+    Note: matches the *bypass tooling binary names* in the command line.
+    Just running cleanmgr.exe is fine; we only fire when one of these
+    binaries is named in a command-line context (which usually means an
+    autoElevate hijack chain).
+    """
     if event.canonical_type == CanonicalType.ALERT:
-        name = event.alert_name.lower()
-        return "uac bypass" in name or "elevation" in name
+        name = (event.alert_name or "").lower()
+        return "uac bypass" in name or "auto elevation" in name
     if event.canonical_type == CanonicalType.PROCESS_EXECUTION:
-        cmd = event.command_line.lower()
-        uac_indicators = [
-            "fodhelper", "computerdefaults", "sdclt", "eventvwr",
-            "cleanmgr", "diskcleanup", "slui", "delegateexecute"
-        ]
-        return any(ind in cmd for ind in uac_indicators)
+        cmd = event.command_line or ""
+        if not cmd:
+            return False
+        # Only fire when the bypass binary is being launched WITH another
+        # command (e.g. registry write to DelegateExecute), not when it's
+        # the only thing on the line.
+        if not _UAC_BYPASS_RE.search(cmd):
+            return False
+        # Heuristic: real bypass chains usually involve a registry write
+        # or cmd.exe spawn alongside the bypass binary.
+        return bool(re.search(r"\b(?:reg\s+add|delegateexecute|hkcu|hkey_current_user|cmd\s+/c)\b", cmd, re.IGNORECASE))
     return False
 
 def _is_sigma_defense_evasion(event: CanonicalEvent) -> bool:
