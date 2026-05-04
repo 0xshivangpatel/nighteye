@@ -146,11 +146,11 @@ class ShadowDeletionConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("vssadmin_delete_shadows", 55, _is_vssadmin_delete),
-            TriggerRule("wmic_shadowcopy_delete", 50, _is_wmic_shadowcopy_delete),
-            TriggerRule("diskshadow_delete", 50, _is_diskshadow_delete),
-            TriggerRule("evtx_524", 40, _is_evtx_524),
-            TriggerRule("powershell_remove_wmiobject_shadow", 50, _is_powershell_remove_shadow),
+            TriggerRule("vssadmin_delete_shadows", 45, _is_vssadmin_delete),
+            TriggerRule("wmic_shadowcopy_delete", 40, _is_wmic_shadowcopy_delete),
+            TriggerRule("diskshadow_delete", 40, _is_diskshadow_delete),
+            TriggerRule("evtx_524", 25, _is_evtx_524),
+            TriggerRule("powershell_remove_wmiobject_shadow", 40, _is_powershell_remove_shadow),
         ]
 
     @property

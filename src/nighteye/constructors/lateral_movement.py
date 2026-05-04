@@ -263,16 +263,16 @@ class LateralMovementConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("network_logon_type3_from_internal", 30, _is_network_logon_type3),
-            TriggerRule("rdp_logon", 45, _is_rdp_logon),
-            TriggerRule("smb_admin_share_write", 50, _is_smb_admin_share_write),
-            TriggerRule("wmi_remote_execution", 45, _is_wmi_remote),
-            TriggerRule("psexec_usage", 50, _is_psexec_usage),
-            TriggerRule("powershell_remoting", 45, _is_powershell_remoting),
-            TriggerRule("ssh_lateral", 40, _is_ssh_lateral),
-            TriggerRule("pass_the_hash_ticket", 55, _is_pass_the_hash),
-            TriggerRule("new_service_remote", 40, _is_new_service_remote),
-            TriggerRule("scheduled_task_remote", 40, _is_scheduled_task_remote),
+            TriggerRule("network_logon_type3_from_internal", 15, _is_network_logon_type3),
+            TriggerRule("rdp_logon", 25, _is_rdp_logon),
+            TriggerRule("smb_admin_share_write", 35, _is_smb_admin_share_write),
+            TriggerRule("wmi_remote_execution", 25, _is_wmi_remote),
+            TriggerRule("psexec_usage", 40, _is_psexec_usage),
+            TriggerRule("powershell_remoting", 25, _is_powershell_remoting),
+            TriggerRule("ssh_lateral", 25, _is_ssh_lateral),
+            TriggerRule("pass_the_hash_ticket", 40, _is_pass_the_hash),
+            TriggerRule("new_service_remote", 15, _is_new_service_remote),
+            TriggerRule("scheduled_task_remote", 15, _is_scheduled_task_remote),
         ]
 
     @property

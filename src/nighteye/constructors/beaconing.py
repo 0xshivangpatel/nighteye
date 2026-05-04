@@ -216,14 +216,14 @@ class BeaconingConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("periodic_outbound_low_jitter", 35, _is_periodic_outbound),
-            TriggerRule("dga_dns_pattern", 50, _is_dga_dns),
-            TriggerRule("low_rep_destination", 45, _is_low_rep_destination),
-            TriggerRule("cobalt_strike_pipe", 55, _is_cobalt_strike_pipe),
-            TriggerRule("dns_tunnel_pattern", 50, _is_dns_tunnel_pattern),
-            TriggerRule("user_agent_anomaly", 30, _is_user_agent_anomaly),
-            TriggerRule("non_standard_port_external", 35, _is_non_standard_port_external),
-            TriggerRule("ja3_known_malicious", 45, _is_ja3_malicious),
+            TriggerRule("periodic_outbound_low_jitter", 20, _is_periodic_outbound),
+            TriggerRule("dga_dns_pattern", 35, _is_dga_dns),
+            TriggerRule("low_rep_destination", 25, _is_low_rep_destination),
+            TriggerRule("cobalt_strike_pipe", 45, _is_cobalt_strike_pipe),
+            TriggerRule("dns_tunnel_pattern", 35, _is_dns_tunnel_pattern),
+            TriggerRule("user_agent_anomaly", 15, _is_user_agent_anomaly),
+            TriggerRule("non_standard_port_external", 20, _is_non_standard_port_external),
+            TriggerRule("ja3_known_malicious", 30, _is_ja3_malicious),
         ]
 
     @property

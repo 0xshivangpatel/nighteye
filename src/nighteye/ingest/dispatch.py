@@ -62,6 +62,7 @@ class EvidenceType(str, Enum):
     APACHE_LOG = "apache_log"
     SCHEDULED_TASK_XML = "scheduled_task_xml"
     SYSMON_CONFIG = "sysmon_config"
+    REDLINE_MANS = "redline_mans"
     UNKNOWN = "unknown"
 
 
@@ -88,6 +89,7 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".csv": EvidenceType.WIN_TIMELINE,   # bodyfile / supertimeline / volatility output
     ".json": EvidenceType.WIN_TIMELINE,  # volatility JSON / redline JSON output
     ".jsonl": EvidenceType.WIN_TIMELINE,
+    ".mans": EvidenceType.REDLINE_MANS,
     # Executable types — metadata-indexed for path/timestamp evidence
     ".exe": EvidenceType.UNKNOWN,
     ".dll": EvidenceType.UNKNOWN,

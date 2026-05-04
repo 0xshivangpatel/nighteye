@@ -166,13 +166,13 @@ class ImpactConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("mass_file_modification", 40, _is_mass_file_modification),
-            TriggerRule("ransomware_extension_pattern", 55, _is_ransomware_extension),
-            TriggerRule("shadow_copy_deletion", 50, _is_shadow_copy_deletion),
-            TriggerRule("backup_destruction", 50, _is_backup_destruction),
-            TriggerRule("ransom_note_pattern", 45, _is_ransom_note),
-            TriggerRule("mass_service_stop", 40, _is_mass_service_stop),
-            TriggerRule("mass_account_lockout", 35, _is_mass_account_lockout),
+            TriggerRule("mass_file_modification", 20, _is_mass_file_modification),
+            TriggerRule("ransomware_extension_pattern", 45, _is_ransomware_extension),
+            TriggerRule("shadow_copy_deletion", 40, _is_shadow_copy_deletion),
+            TriggerRule("backup_destruction", 40, _is_backup_destruction),
+            TriggerRule("ransom_note_pattern", 35, _is_ransom_note),
+            TriggerRule("mass_service_stop", 20, _is_mass_service_stop),
+            TriggerRule("mass_account_lockout", 20, _is_mass_account_lockout),
         ]
 
     @property

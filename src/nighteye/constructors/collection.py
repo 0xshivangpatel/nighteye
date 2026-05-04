@@ -159,12 +159,12 @@ class CollectionConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("mass_file_enumeration", 40, _is_mass_file_enumeration),
-            TriggerRule("archive_creation_unusual_path", 45, _is_archive_creation_unusual),
-            TriggerRule("password_grep_pattern", 50, _is_password_grep),
-            TriggerRule("document_recursive_enumeration", 40, _is_document_enumeration),
-            TriggerRule("screenshot_or_clipboard_yara", 45, _is_screenshot_or_clipboard_yara),
-            TriggerRule("outlook_pst_access_unusual", 40, _is_outlook_pst_unusual),
+            TriggerRule("mass_file_enumeration", 20, _is_mass_file_enumeration),
+            TriggerRule("archive_creation_unusual_path", 25, _is_archive_creation_unusual),
+            TriggerRule("password_grep_pattern", 35, _is_password_grep),
+            TriggerRule("document_recursive_enumeration", 20, _is_document_enumeration),
+            TriggerRule("screenshot_or_clipboard_yara", 25, _is_screenshot_or_clipboard_yara),
+            TriggerRule("outlook_pst_access_unusual", 20, _is_outlook_pst_unusual),
         ]
 
     @property

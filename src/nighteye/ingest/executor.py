@@ -593,6 +593,9 @@ def _stream_group_docs(group: IngestGroup, case_id: str, pbar: Any = None) -> It
                 yield from docs
             else:
                 yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
+        elif artifact_type == EvidenceType.REDLINE_MANS:
+            from nighteye.ingest.redline_mans import stream_redline_mans
+            yield from stream_redline_mans(evidence.path, host_name)
         elif artifact_type != EvidenceType.UNKNOWN:
             yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         else:

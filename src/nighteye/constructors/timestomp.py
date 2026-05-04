@@ -129,10 +129,10 @@ class TimestompConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("si_fn_timestamp_mismatch", 45, _is_si_fn_mismatch),
-            TriggerRule("si_before_fn", 50, _is_si_before_fn),
-            TriggerRule("rounded_second_timestamps", 35, _is_rounded_timestamps),
-            TriggerRule("backdated_file", 40, _is_backdated_file),
+            TriggerRule("si_fn_timestamp_mismatch", 25, _is_si_fn_mismatch),
+            TriggerRule("si_before_fn", 30, _is_si_before_fn),
+            TriggerRule("rounded_second_timestamps", 20, _is_rounded_timestamps),
+            TriggerRule("backdated_file", 25, _is_backdated_file),
         ]
 
     @property

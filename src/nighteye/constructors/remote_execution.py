@@ -180,13 +180,13 @@ class RemoteExecutionConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("office_spawning_shell", 60, _is_office_spawning_shell),
-            TriggerRule("psexec_usage", 50, _is_psexec_usage),
-            TriggerRule("wmi_remote_execution", 45, _is_wmi_remote),
-            TriggerRule("powershell_remoting", 45, _is_powershell_remoting),
-            TriggerRule("scheduled_task_remote", 40, _is_scheduled_task_remote),
-            TriggerRule("service_remote_install", 40, _is_service_remote_install),
-            TriggerRule("winrm_remote_management", 35, _is_winrm_activity),
+            TriggerRule("office_spawning_shell", 45, _is_office_spawning_shell),
+            TriggerRule("psexec_usage", 40, _is_psexec_usage),
+            TriggerRule("wmi_remote_execution", 25, _is_wmi_remote),
+            TriggerRule("powershell_remoting", 25, _is_powershell_remoting),
+            TriggerRule("scheduled_task_remote", 15, _is_scheduled_task_remote),
+            TriggerRule("service_remote_install", 15, _is_service_remote_install),
+            TriggerRule("winrm_remote_management", 20, _is_winrm_activity),
         ]
 
     @property

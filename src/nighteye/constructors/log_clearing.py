@@ -138,10 +138,10 @@ class LogClearingConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("evtx_1102_clear", 55, _is_evtx_1102_clear),
-            TriggerRule("evtx_104_alt_clear", 45, _is_evtx_104_alt_clear),
-            TriggerRule("recordid_gap", 40, _is_recordid_gap),
-            TriggerRule("evtx_truncated", 35, _is_evtx_truncated),
+            TriggerRule("evtx_1102_clear", 45, _is_evtx_1102_clear),
+            TriggerRule("evtx_104_alt_clear", 35, _is_evtx_104_alt_clear),
+            TriggerRule("recordid_gap", 25, _is_recordid_gap),
+            TriggerRule("evtx_truncated", 20, _is_evtx_truncated),
         ]
 
     @property

@@ -187,12 +187,12 @@ class ExfiltrationConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("large_outbound_transfer", 35, _is_large_outbound_transfer),
-            TriggerRule("cloud_upload_tool", 45, _is_cloud_upload_tool),
-            TriggerRule("archive_before_transfer", 40, _is_archive_before_transfer),
-            TriggerRule("dns_exfil_pattern", 50, _is_dns_exfil_pattern),
-            TriggerRule("https_non_standard_port", 35, _is_https_to_non_standard),
-            TriggerRule("smb_to_external", 45, _is_smb_to_external),
+            TriggerRule("large_outbound_transfer", 15, _is_large_outbound_transfer),
+            TriggerRule("cloud_upload_tool", 25, _is_cloud_upload_tool),
+            TriggerRule("archive_before_transfer", 20, _is_archive_before_transfer),
+            TriggerRule("dns_exfil_pattern", 35, _is_dns_exfil_pattern),
+            TriggerRule("https_non_standard_port", 20, _is_https_to_non_standard),
+            TriggerRule("smb_to_external", 25, _is_smb_to_external),
         ]
 
     @property

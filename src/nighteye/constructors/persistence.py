@@ -183,13 +183,13 @@ class PersistenceConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("registry_run_key", 45, _is_registry_run_key),
-            TriggerRule("scheduled_task_creation", 45, _is_scheduled_task_creation),
-            TriggerRule("wmi_event_subscription", 50, _is_wmi_event_subscription),
-            TriggerRule("service_install", 45, _is_service_install),
-            TriggerRule("startup_folder", 40, _is_startup_folder),
-            TriggerRule("bits_job_persistence", 40, _is_bits_job_persistence),
-            TriggerRule("dll_search_order_hijacking", 45, _is_dll_search_order_hijacking),
+            TriggerRule("registry_run_key", 20, _is_registry_run_key),
+            TriggerRule("scheduled_task_creation", 15, _is_scheduled_task_creation),
+            TriggerRule("wmi_event_subscription", 25, _is_wmi_event_subscription),
+            TriggerRule("service_install", 15, _is_service_install),
+            TriggerRule("startup_folder", 20, _is_startup_folder),
+            TriggerRule("bits_job_persistence", 20, _is_bits_job_persistence),
+            TriggerRule("dll_search_order_hijacking", 25, _is_dll_search_order_hijacking),
         ]
 
     @property

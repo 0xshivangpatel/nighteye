@@ -213,13 +213,13 @@ class CredentialAccessConstructor(Constructor):
     @property
     def triggers(self) -> list[TriggerRule]:
         return [
-            TriggerRule("lsass_access_or_dump", 55, _is_lsass_access),
-            TriggerRule("sam_hive_copy", 45, _is_sam_hive_copy),
-            TriggerRule("kerberoast_activity", 50, _is_kerberoast),
-            TriggerRule("ntds_dump", 50, _is_ntds_dump),
-            TriggerRule("password_spray_brute_force", 40, _is_password_spray),
-            TriggerRule("credential_vault_access", 40, _is_credvault_access),
-            TriggerRule("dpapi_extraction", 45, _is_dpapi_extraction),
+            TriggerRule("lsass_access_or_dump", 45, _is_lsass_access),
+            TriggerRule("sam_hive_copy", 35, _is_sam_hive_copy),
+            TriggerRule("kerberoast_activity", 35, _is_kerberoast),
+            TriggerRule("ntds_dump", 35, _is_ntds_dump),
+            TriggerRule("password_spray_brute_force", 25, _is_password_spray),
+            TriggerRule("credential_vault_access", 25, _is_credvault_access),
+            TriggerRule("dpapi_extraction", 30, _is_dpapi_extraction),
         ]
 
     @property
