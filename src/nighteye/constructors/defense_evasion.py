@@ -298,15 +298,18 @@ class DefenseEvasionConstructor(Constructor):
 
     @property
     def triggers(self) -> list[TriggerRule]:
+        # Base scores lowered so a single trigger without supporting context
+        # lands in WEAK (20-39) rather than auto-MODERATE.  Supporting signals
+        # (+10 to +14 each) push clusters into MODERATE / STRONG.
         return [
-            TriggerRule("obfuscated_powershell", 40, _is_obfuscated_powershell),
-            TriggerRule("amsi_bypass", 55, _is_amsi_bypass),
-            TriggerRule("etw_tamper", 50, _is_etw_tamper),
-            TriggerRule("edr_disable", 50, _is_edr_disable),
-            TriggerRule("process_injection", 50, _is_process_injection),
-            TriggerRule("process_masquerading", 45, _is_masquerading),
-            TriggerRule("uac_bypass", 45, _is_uac_bypass),
-            TriggerRule("sigma_defense_evasion", 40, _is_sigma_defense_evasion),
+            TriggerRule("obfuscated_powershell", 30, _is_obfuscated_powershell),
+            TriggerRule("amsi_bypass", 35, _is_amsi_bypass),
+            TriggerRule("etw_tamper", 28, _is_etw_tamper),
+            TriggerRule("edr_disable", 35, _is_edr_disable),
+            TriggerRule("process_injection", 30, _is_process_injection),
+            TriggerRule("process_masquerading", 25, _is_masquerading),
+            TriggerRule("uac_bypass", 28, _is_uac_bypass),
+            TriggerRule("sigma_defense_evasion", 30, _is_sigma_defense_evasion),
         ]
 
     @property

@@ -28,6 +28,29 @@ __all__ = [
 logger = logging.getLogger("nighteye.constructors")
 
 
+def _parse_ts(ts: str | None) -> float | None:
+    """Parse an ISO timestamp to Unix epoch seconds."""
+    if not ts:
+        return None
+    try:
+        from datetime import datetime, timezone
+        norm = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _event_in_window(event: CanonicalEvent, win_start: float, win_end: float) -> bool:
+    """Return True if the event timestamp falls within [win_start, win_end]."""
+    ts = _parse_ts(event.timestamp)
+    if ts is None:
+        return False
+    return win_start <= ts <= win_end
+
+
 class TriggerRule:
     """A rule that identifies a primary behavior and instantiates a Cluster."""
     def __init__(self, name: str, base_score: int, filter_fn: Callable[[CanonicalEvent], bool]):
@@ -218,8 +241,23 @@ class Constructor(ABC):
 
     def apply_supporting_signals(self, cluster: Cluster, context_events: list[CanonicalEvent]) -> None:
         """Apply all supporting signals to a cluster based on the time window context."""
+        # Slice context to a temporal window around the cluster so that
+        # signals like "persistence_mechanism_present" don't fire just
+        # because the host ever had a registry modification.
+        window_sec = getattr(self, "grouping_window_seconds", 1800)
+        cluster_start = _parse_ts(cluster.time_start)
+        cluster_end = _parse_ts(cluster.time_end)
+        if cluster_start and cluster_end:
+            win_start = cluster_start - window_sec
+            win_end = cluster_end + window_sec
+            filtered = [
+                e for e in context_events
+                if _event_in_window(e, win_start, win_end)
+            ]
+        else:
+            filtered = context_events
         for signal in self.supporting_signals:
-            if signal.evaluate_fn(cluster, context_events):
+            if signal.evaluate_fn(cluster, filtered):
                 cluster.add_supporting_signal(signal.name, signal.weight)
 
     def apply_counter_evidence(self, cluster: Cluster) -> None:
