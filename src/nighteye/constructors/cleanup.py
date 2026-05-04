@@ -236,7 +236,14 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             triggers = json.loads(row["triggers_fired"] or "[]")
             has_keep_trigger = any(t in _KEEP_TRIGGERS for t in triggers)
 
-            if not (is_moderate_plus or is_aggregate or has_keep_trigger):
+            # Skip aggregate entries — they represent collapsed noise,
+            # not actionable findings.
+            if is_aggregate:
+                continue
+
+            # Only seed hypotheses for MODERATE+ clusters or clusters
+            # with high-value keep triggers
+            if not (is_moderate_plus or has_keep_trigger):
                 continue
 
             # Skip if hypothesis already exists for this cluster

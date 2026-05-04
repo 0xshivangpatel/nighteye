@@ -257,7 +257,7 @@ class Hypothesis:
             else:
                 confidence = ConfidenceBreakdown.from_json(json.dumps(conf_data))
 
-        raw_refs = d.get("evidence_refs", [])
+        raw_refs = d.get("evidence_refs") or []
         if isinstance(raw_refs, str):
             try:
                 raw_refs = json.loads(raw_refs)
@@ -265,10 +265,10 @@ class Hypothesis:
                 raw_refs = []
         evidence_refs = [
             EvidenceRef.from_json(json.dumps(e)) if not isinstance(e, EvidenceRef) else e 
-            for e in raw_refs
+            for e in (raw_refs if isinstance(raw_refs, list) else [])
         ]
 
-        raw_links = d.get("causal_links", [])
+        raw_links = d.get("causal_links") or []
         if isinstance(raw_links, str):
             try:
                 raw_links = json.loads(raw_links)
@@ -276,16 +276,16 @@ class Hypothesis:
                 raw_links = []
         causal_links = [
             CausalLink.from_json(json.dumps(c)) if not isinstance(c, CausalLink) else c 
-            for c in raw_links
+            for c in (raw_links if isinstance(raw_links, list) else [])
         ]
-        raw_tech = d.get("technique_ids", [])
+        raw_tech = d.get("technique_ids") or []
         if isinstance(raw_tech, str):
             try:
                 raw_tech = json.loads(raw_tech)
             except:
                 raw_tech = []
         
-        raw_audits = d.get("audit_ids", [])
+        raw_audits = d.get("audit_ids") or []
         if isinstance(raw_audits, str):
             try:
                 raw_audits = json.loads(raw_audits)

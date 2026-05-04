@@ -462,7 +462,7 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
         print(f"  → {cluster_stats['anti_forensic']} anti-forensic indicators detected")
 
     # Step 5: Cleanup & Seed
-    print("\n[5/5] Cleaning up clusters and seeding hypotheses...")
+    print("\n[5/6] Cleaning up clusters and seeding hypotheses...")
     t0 = _time.time()
     from nighteye.constructors.cleanup import run_cluster_cleanup
     cleanup_stats = run_cluster_cleanup(case.graph_db, case.id, case.examiner)
@@ -472,6 +472,17 @@ def cmd_full_pipeline(args: argparse.Namespace) -> int:
     print(f"  → {cleanup_stats['clusters_kept']} actionable clusters retained")
     print(f"  → {cleanup_stats['hypotheses_seeded']} hypotheses seeded")
     print(f"  → Cleanup complete in {t1 - t0:.0f}s")
+
+    # Step 6: Investigation
+    print("\n[6/6] Running investigation phase...")
+    t0 = _time.time()
+    from nighteye.constructors.investigation import run_investigation_phase
+    inv_stats = run_investigation_phase(case.graph_db, case.id, case.examiner)
+    t1 = _time.time()
+    print(f"  → {inv_stats['challenged']} hypotheses challenged")
+    print(f"  → {inv_stats['approved']} approved, {inv_stats['rejected']} rejected")
+    print(f"  → {inv_stats['root_cause_steps']} kill-chain steps identified")
+    print(f"  → Investigation complete in {t1 - t0:.0f}s")
 
     total_end = _time.time()
     print("\n" + "=" * 60)

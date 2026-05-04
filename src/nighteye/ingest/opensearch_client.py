@@ -372,7 +372,13 @@ class NightEyeOSClient:
         hits = result["hits"]["hits"]
 
         while hits:
-            yield [h["_source"] for h in hits]
+            page = []
+            for h in hits:
+                src = h["_source"]
+                src["_index"] = h["_index"]
+                src["_id"] = h["_id"]
+                page.append(src)
+            yield page
 
             if not scroll_id:
                 break
