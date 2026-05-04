@@ -169,68 +169,125 @@ def _extract_one(source: Path, out_dir: Path) -> bool:
     return True
 
 
-def _have_ewf() -> bool:
-    return shutil.which("ewfmount") is not None
+def _have_plaso() -> bool:
+    return shutil.which("log2timeline.py") is not None and shutil.which("psort.py") is not None
 
 
-def _have_tsk() -> bool:
-    return shutil.which("tsk_recover") is not None and shutil.which("fls") is not None
+# Comprehensive Windows artifact filters for DFIR-relevant data.
+# Covers execution, persistence, temp/startup locations, registry,
+# event logs, recycle bin, and system caches.
+_PLASO_ARTIFACT_FILTERS = (
+    "WindowsEventLogs,"
+    "WindowsPrefetchFiles,"
+    "WindowsRegistrySystem,"
+    "WindowsRegistrySoftware,"
+    "WindowsRegistrySecurity,"
+    "WindowsRegistrySAM,"
+    "WindowsRecycleBin,"
+    "WindowsRecycleBinMetadata,"
+    "WindowsShimCache,"
+    "WindowsAMCacheHveFile,"
+    "WindowsActivitiesCacheDatabase,"
+    "WindowsTempDirectories,"
+    "WindowsStartupFolders,"
+    "WindowsStartupFolderModification,"
+    "WindowsScheduledTasks,"
+    "WindowsSharedTaskScheduler,"
+    "WindowsStartupScript,"
+    "WindowsEnvironmentVariableTemp"
+)
 
 
 def _extract_e01(source: Path, out_dir: Path) -> bool:
-    """Extract files from an E01 forensic image via ewfmount + tsk_recover.
+    """Extract forensic artifacts from an E01 image using Plaso.
 
-    On SIFT, ewfmount and sleuthkit are pre-installed. This mounts the
-    E01 as a raw device, then uses tsk_recover to extract all files into
-    out_dir preserving the original directory structure.
+    Instead of tsk_recover (which extracts millions of benign system
+    files and often misses key forensic artifacts), we run Plaso with
+    targeted artifact filters.  Plaso produces a structured timeline CSV
+    that the generic ingest pipeline can parse directly.
+
+    The resulting ``plaso.csv`` is placed in
+    ``out_dir/precooked/timeline/plaso.csv`` so that ``build_ingest_plan``
+    discovers it as a ``WIN_TIMELINE`` artifact.
     """
-    if not _have_ewf():
-        logger.warning("ewfmount not found — cannot extract E01 %s. Install with: sudo apt install ewf-tools", source.name)
-        return False
-    if not _have_tsk():
-        logger.warning("sleuthkit not found — cannot recover files from E01 %s. Install with: sudo apt install sleuthkit", source.name)
+    if not _have_plaso():
+        logger.warning(
+            "Plaso (log2timeline.py / psort.py) not found — cannot process E01 %s. "
+            "Install with: sudo apt install plaso-tools", source.name
+        )
         return False
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="nighteye_ewf_") as mount_dir:
-        mount_point = Path(mount_dir)
+    plaso_store = out_dir / "_nighteye.plaso"
+    timeline_dir = out_dir / "precooked" / "timeline"
+    timeline_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = timeline_dir / "plaso.csv"
+
+    try:
+        # 1. Run log2timeline.py with artifact filters
+        logger.info("Running Plaso log2timeline on %s ...", source.name)
+        result = subprocess.run(
+            [
+                "log2timeline.py",
+                "--artifact_filters", _PLASO_ARTIFACT_FILTERS,
+                "--storage-file", str(plaso_store),
+                str(source),
+            ],
+            capture_output=True, text=True, timeout=7200,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "log2timeline.py failed for %s: %s",
+                source.name, result.stderr[-800:]
+            )
+            return False
+
+        # 2. Export to l2tcsv
+        logger.info("Exporting Plaso timeline for %s ...", source.name)
+        result = subprocess.run(
+            [
+                "psort.py",
+                "-o", "l2tcsv",
+                "-w", str(csv_path),
+                str(plaso_store),
+            ],
+            capture_output=True, text=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "psort.py failed for %s: %s",
+                source.name, result.stderr[-800:]
+            )
+            return False
+
+        # Clean up the large .plaso store to save disk space
         try:
-            # Mount E01 as raw device
-            result = subprocess.run(
-                ["ewfmount", str(source), str(mount_point)],
-                capture_output=True, text=True, timeout=300,
-            )
-            if result.returncode != 0:
-                logger.error("ewfmount failed for %s: %s", source.name, result.stderr[:500])
-                return False
+            plaso_store.unlink()
+        except OSError:
+            pass
 
-            # The raw image is at mount_point/ewf1
-            raw_image = mount_point / "ewf1"
-            if not raw_image.exists():
-                logger.error("ewfmount produced no ewf1 device for %s", source.name)
-                return False
-
-            # Extract all files with tsk_recover
-            logger.info("Recovering files from %s via tsk_recover...", source.name)
-            result = subprocess.run(
-                ["tsk_recover", str(raw_image), str(out_dir)],
-                capture_output=True, text=True, timeout=3600,
-            )
-            if result.returncode != 0:
-                logger.warning("tsk_recover completed with warnings for %s", source.name)
-
-        except subprocess.TimeoutExpired:
-            logger.error("E01 extraction timed out for %s", source.name)
-            return False
-        except Exception as exc:
-            logger.error("E01 extraction failed for %s: %s", source.name, exc)
-            return False
-        finally:
-            # Unmount (umount the fuse mount)
-            subprocess.run(["fusermount", "-u", str(mount_point)], capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        logger.error("Plaso extraction timed out for %s", source.name)
+        return False
+    except Exception as exc:
+        logger.error("Plaso extraction failed for %s: %s", source.name, exc)
+        return False
 
     _write_marker(out_dir, source)
+    logger.info(
+        "Plaso extraction complete for %s → %s (%s)",
+        source.name, csv_path, _human_bytes(csv_path.stat().st_size) if csv_path.exists() else "0 B"
+    )
     return True
+
+
+def _human_bytes(n: int) -> str:
+    """Convert bytes to human-readable string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n = int(n / 1024)
+    return f"{n:.1f} PB"
 
 
 # ============================================================

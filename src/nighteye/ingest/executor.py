@@ -267,9 +267,12 @@ def _stream_directory(
             continue
         detected = detect_evidence_type(item)
         file_audit_id = f"{audit_id}-{item.name}"
-        # UNKNOWN types get metadata docs (could be malware .exe, .dll, etc.)
+        # UNKNOWN types: only index metadata if the file is actually
+        # suspicious or forensic-relevant.  This prevents millions of
+        # benign Windows system files from polluting OpenSearch.
         if detected.evidence_type == EvidenceType.UNKNOWN:
-            yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
+            if is_suspicious_or_forensic(detected.evidence_type, item):
+                yield _metadata_doc(item, detected.evidence_type, host_name, source_file, file_audit_id)
             continue
         # Recursive container types — skip, already handled by extraction
         if detected.evidence_type == EvidenceType.KAPE_ZIP:

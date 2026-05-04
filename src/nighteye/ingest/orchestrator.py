@@ -233,10 +233,7 @@ def resolve_host_name(
     for part in parts:
         if part.lower() in _NON_HOST_DIRS or part.lower() in _TRIAGE_MARKERS:
             break  # Don't scan into system directories
-        # Skip nighteye extraction directories themselves
-        if "nighteye" in part.lower():
-            continue
-        # Skip parts that match non-host fragments
+# Skip parts that match non-host fragments (nighteye, win7, etc.)
         lower_part = part.lower().replace("_", "-")
         skip = False
         for frag in _NON_HOST_FRAGMENTS:
@@ -252,17 +249,18 @@ def resolve_host_name(
                    "color", "bulk", "agent"}
             if seg in bad or seg.isdigit():
                 continue
-            # IP address segment — skip (handled by Strategy 2.6)
+# IP address segment — skip (handled by Strategy 2.6)
             if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', seg):
                 continue
-            if len(seg) >= 3 and any(c.isalpha() for c in seg) and any(c in "aeiou" for c in seg.lower()):
+            # Skip Windows version prefixes (win10, win2008r2, etc.)
+            if seg.startswith("win") and any(c.isdigit() for c in seg):
+                continue
+            if len(seg) >= 3 and any(c.isalpha() for c in seg):
                 return _sanitize_host(seg)
 
     # Strategy 2.6: Extract IP from directory name fragments (lower priority than real hostnames)
     # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → "10.3.58.5"
     for part in parts:
-        if "nighteye" in part.lower():
-            continue
         import re as _re
         ip_match = _re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
         if ip_match:
@@ -344,6 +342,67 @@ def _sanitize_host(name: str) -> str:
     return clean or "unknown-host"
 
 
+def _is_e01_extraction_dir(path: Path) -> bool:
+    """Check whether *path* is a full-disk E01 extraction directory.
+
+    These directories contain millions of benign system files.
+    Scanning them produces nothing but metadata noise and cripples
+    performance.  We detect them by:
+
+    1. The ``.nighteye_extracted`` marker with an E01 source, OR
+    2. Name ending in ``_nighteye`` and containing a Windows system
+       directory (``Windows/System32`` or ``Windows/SysWOW64``).
+    """
+    # Marker-based detection (exact)
+    marker = path / ".nighteye_extracted"
+    if marker.is_file():
+        try:
+            text = marker.read_text(encoding="utf-8")
+            if ".e01" in text.lower():
+                return True
+        except OSError:
+            pass
+
+    # Heuristic: name ends with _nighteye and looks like a full Windows image
+    if path.name.lower().endswith("_nighteye"):
+        if (path / "Windows" / "System32").is_dir() or (path / "Windows" / "SysWOW64").is_dir():
+            return True
+
+    return False
+
+
+_ARTIFACT_SUBPATHS: frozenset[str] = frozenset({
+    "precooked", "timeline", "shimcache", "amcache", "evtx",
+    "registry", "prefetch", "mft", "usnjrnl", "srum",
+    "eventlogs", "winevt", "logs",
+})
+
+
+def _inside_e01_extraction(path: Path, root: Path) -> bool:
+    """Return True if *path* lies inside an E01 extraction directory.
+
+    However, forensic artifact directories (precooked/, timeline/,
+    shimcache/, etc.) inside E01 extractions are EXEMPTED — they
+    contain pre-processed evidence that should always be ingested.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    rel_lower = str(rel).lower().replace("\\", "/")
+    for marker in _ARTIFACT_SUBPATHS:
+        if f"/{marker}/" in f"/{rel_lower}/":
+            return False
+    # Check every ancestor between root and path
+    for parent in rel.parents:
+        if parent == Path("."):
+            continue
+        ancestor = root / parent
+        if _is_e01_extraction_dir(ancestor):
+            return True
+    return False
+
+
 # ============================================================
 # Ingest plan builder
 # ============================================================
@@ -380,15 +439,25 @@ def build_ingest_plan(
 
     # Phase 1: Discover all evidence files
     discovered: list[tuple[DetectedEvidence, Path]] = []
+    discovered_paths: set[Path] = set()
 
     for root in roots:
         if not root.exists():
             logger.warning("Evidence path does not exist: %s", root)
             continue
 
+        # Skip roots that are full-disk E01 extraction directories.
+        # Their millions of benign system files only produce metadata noise.
+        # The parent *_nighteye dir already provides precooked/ artifacts.
+        if root.is_dir() and _is_e01_extraction_dir(root):
+            logger.info("Skipping E01 extraction root (benign full-disk image): %s", root)
+            continue
+
         if root.is_file():
             detected = detect_evidence_type(root)
-            discovered.append((detected, root))
+            if root.resolve() not in discovered_paths:
+                discovered_paths.add(root.resolve())
+                discovered.append((detected, root))
         else:
             # Evidence scan
             # SMART RECURSION: Always recurse into "extractions" folders (they are safe/isolated)
@@ -399,6 +468,13 @@ def build_ingest_plan(
             scan_fn = root.rglob if effective_recursive else root.glob
             archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01", ".ex01", ".e02"}
             for item in sorted(scan_fn("*")):
+                item_resolved = item.resolve()
+                if item_resolved in discovered_paths:
+                    continue
+                # Skip full-disk E01 extractions — they contain millions of
+                # benign system files that create nothing but metadata noise.
+                if _inside_e01_extraction(item, root):
+                    continue
                 if item.is_file():
                     if item.suffix.lower() in archive_exts:
                         continue
@@ -406,11 +482,13 @@ def build_ingest_plan(
                     # Filter: skip known-system UNKNOWN files (.exe from System32 etc.)
                     if not is_suspicious_or_forensic(detected.evidence_type, item):
                         continue
+                    discovered_paths.add(item_resolved)
                     discovered.append((detected, root))
                 elif item.is_dir():
                     # Check if directory contains recognized evidence bundles
                     detected = detect_evidence_type(item)
                     if detected.evidence_type != EvidenceType.UNKNOWN:
+                        discovered_paths.add(item_resolved)
                         discovered.append((detected, root))
 
     # Phase 2: Group by host + artifact type

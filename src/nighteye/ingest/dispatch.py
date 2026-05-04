@@ -162,7 +162,10 @@ _PATH_SUBSTRING_HINTS: list[tuple[str, EvidenceType]] = [
     ("\\timeline\\", EvidenceType.WIN_TIMELINE),
     ("/redline/", EvidenceType.WIN_TIMELINE),
     ("\\redline\\", EvidenceType.WIN_TIMELINE),
-    ("/precooked/",  EvidenceType.KAPE_ZIP),  # Treat precooked as triage bundle — scan contents recursively
+    ("/precooked/shimcache/", EvidenceType.SHIMCACHE),
+    ("\\precooked\\shimcache\\", EvidenceType.SHIMCACHE),
+    ("/precooked/timeline/", EvidenceType.WIN_TIMELINE),
+    ("\\precooked\\timeline\\", EvidenceType.WIN_TIMELINE),
 ]
 
 # Directory-level detection: if dir contains X type of files, treat as Y
@@ -217,29 +220,29 @@ def detect_evidence_type(path: Path) -> DetectedEvidence:
     # Directory: check if it contains recognized evidence patterns
     if path.is_dir():
         size = 0
-    # Check for each content pattern
-    for pattern, etype in _DIR_CONTENT_HINTS:
-        if pattern.startswith("."):
-            # Extension match — use non-recursive glob for .evtx to avoid
-            # detecting every parent directory; rglob for others
-            if pattern == ".evtx":
-                files = list(path.glob(f"*{pattern}"))
+        # Check for each content pattern
+        for pattern, etype in _DIR_CONTENT_HINTS:
+            if pattern.startswith("."):
+                # Extension match — use non-recursive glob for .evtx to avoid
+                # detecting every parent directory; rglob for others
+                if pattern == ".evtx":
+                    files = list(path.glob(f"*{pattern}"))
+                else:
+                    files = list(path.rglob(f"*{pattern}"))
             else:
-                files = list(path.rglob(f"*{pattern}"))
-        else:
-            # Filename match (case-insensitive)
-            files = [
-                f for f in path.rglob("*")
-                if f.is_file() and f.name.lower() == pattern.lower()
-            ]
-        if files:
-            total_size = sum(f.stat().st_size for f in files)
-            return DetectedEvidence(
-                path=path,
-                evidence_type=etype,
-                size_bytes=total_size,
-                note=f"Contains {len(files)} {pattern} files",
-            )
+                # Filename match (case-insensitive)
+                files = [
+                    f for f in path.rglob("*")
+                    if f.is_file() and f.name.lower() == pattern.lower()
+                ]
+            if files:
+                total_size = sum(f.stat().st_size for f in files)
+                return DetectedEvidence(
+                    path=path,
+                    evidence_type=etype,
+                    size_bytes=total_size,
+                    note=f"Contains {len(files)} {pattern} files",
+                )
 
         # Check path hints for directories
         full_path_lower = str(path).lower().replace("\\", "/")
@@ -418,7 +421,18 @@ def is_suspicious_or_forensic(evidence_type: EvidenceType, path: Path) -> bool:
                 return False
         return True
 
-    # All other unknown extensions: ingest (they might be relevant)
+    # Skip known low-value extensions that are overwhelmingly benign.
+    # We keep .dll / .sys / .drv / .exe because they can be malicious in
+    # unknown datasets (DLL sideloading, malicious drivers, etc.).
+    _BENIGN_NOISE_EXTS: frozenset[str] = frozenset({
+        ".txt", ".log", ".yaml", ".yml", ".md", ".rst", ".ioc",
+    })
+    if ext in _BENIGN_NOISE_EXTS:
+        return False
+
+    # Everything else — keep.  Dataset-agnostic ingestion means we don't
+    # know whether a .cfg, .ini, extensionless file, or rare extension
+    # is suspicious until the canonical / graph layers evaluate it.
     return True
 
 

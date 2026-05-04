@@ -225,8 +225,21 @@ class CanonicalNormalizer:
             host_name = self._extract_host(source)
             timestamp = self._extract_timestamp(source)
 
-            # Build canonical event ID
-            canonical_fields = f"{host_name}:{canonical_type.value}:{timestamp}:{self._extract_key_fields(source, canonical_type)}"
+            # Reject events without a usable timestamp — OpenSearch date type
+            # cannot index empty strings and they are useless for timeline-based
+            # clustering anyway.
+            if not timestamp:
+                self.stats["skipped"] += 1
+                return None
+
+            # Build canonical event ID — include source doc provenance so
+            # identical logical events from different raw docs do not collapse
+            # into a single canonical event, and vice-versa.
+            provenance = f"{doc.get('_index', '')}:{doc.get('_id', '')}"
+            canonical_fields = (
+                f"{host_name}:{canonical_type.value}:{timestamp}:"
+                f"{self._extract_key_fields(source, canonical_type)}:{provenance}"
+            )
             event_id = hashlib.sha256(
                 f"{self.case_id}:{canonical_fields}".encode()
             ).hexdigest()[:32]
@@ -343,20 +356,21 @@ class CanonicalNormalizer:
             norm = normalize_timestamp(ts)
             return norm or ts
         # Priority 2: file timestamps (from metadata docs, timeline CSVs)
-        file_mtime = _get_nested_or_flat(doc, "file", "mtime")
-        if not file_mtime:
-            file_mtime = doc.get("file.mtime")
-        if file_mtime:
-            try:
-                from datetime import datetime, timezone
-                if isinstance(file_mtime, (int, float)):
-                    return datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
-            except Exception:
-                pass
-            norm = normalize_timestamp(str(file_mtime))
-            if norm:
-                return norm
-            return str(file_mtime)
+        for field in ("file.mtime", "bodyfile.mtime", "bodyfile.crtime"):
+            file_mtime = _get_nested_or_flat(doc, *field.split("."))
+            if not file_mtime:
+                file_mtime = doc.get(field)
+            if file_mtime:
+                try:
+                    from datetime import datetime, timezone
+                    if isinstance(file_mtime, (int, float)):
+                        return datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
+                except Exception:
+                    pass
+                norm = normalize_timestamp(str(file_mtime))
+                if norm:
+                    return norm
+                return str(file_mtime)
         return ""
 
     def _extract_user(self, doc: dict[str, Any]) -> str:
@@ -447,7 +461,7 @@ class CanonicalNormalizer:
         elif canonical_type == CanonicalType.NETWORK_CONNECTION:
             return f"{_get_nested_or_flat(doc, 'source', 'ip')}:{_get_nested_or_flat(doc, 'destination', 'ip')}:{_get_nested_or_flat(doc, 'destination', 'port')}"
         elif canonical_type == CanonicalType.FILE_CREATION:
-            return _get_nested_or_flat(doc, "file", "path")
+            return _get_nested_or_flat(doc, "file", "path") or doc.get("nighteye", {}).get("source_file", "")
         elif canonical_type == CanonicalType.REGISTRY_MODIFICATION:
             return _get_nested_or_flat(doc, "registry", "key")
         elif canonical_type == CanonicalType.SERVICE_INSTALLATION:
@@ -455,7 +469,7 @@ class CanonicalNormalizer:
         elif canonical_type == CanonicalType.SCHEDULED_TASK:
             return _get_nested_or_flat(doc, "task", "name")
         elif canonical_type == CanonicalType.ALERT:
-            return _get_nested_or_flat(doc, "rule", "name")
+            return _get_nested_or_flat(doc, "rule", "name") or _get_nested_or_flat(doc, "file", "path") or doc.get("nighteye", {}).get("source_file", "")
         return ""
 
 

@@ -151,13 +151,34 @@ def _parse_json(
 # ── CSV ────────────────────────────────────────────────────────
 
 
+def _is_plaso_csv(fieldnames: list[str] | None) -> bool:
+    """Detect Plaso l2tcsv export by its canonical columns."""
+    if not fieldnames:
+        return False
+    required = {"date", "time", "timezone", "sourcetype", "source", "type", "user", "host", "short", "desc", "filename", "extra"}
+    return required.issubset(set(fieldnames))
+
+
+def _is_shimcache_csv(fieldnames: list[str] | None) -> bool:
+    """Detect Shimcache CSV by its canonical columns."""
+    if not fieldnames:
+        return False
+    required = {"Last Modified", "Path", "Exec Flag"}
+    return required.issubset(set(fieldnames))
+
+
 def _parse_csv(
     path: Path,
     host_name: str,
     source_file: str,
     audit_id: str,
 ) -> Iterator[dict[str, Any]]:
-    """Stream CSV rows via csv.DictReader."""
+    """Stream CSV rows via csv.DictReader.
+
+    Auto-detects Plaso l2tcsv and Shimcache CSV formats and routes them
+    through the dedicated high-fidelity parsers instead of the generic
+    timeline parser.
+    """
 
     count = 0
     try:
@@ -168,16 +189,64 @@ def _parse_csv(
             except Exception:
                 sample = ""
 
-            try:
-                dialect = csv.Sniffer().sniff(sample[:4096])
-            except csv.Error:
-                dialect = csv.excel
+            dialect = csv.excel
+            if sample:
+                try:
+                    sniffed = csv.Sniffer().sniff(sample[:4096])
+                    test_line = sample.splitlines()[0] if sample.splitlines() else ""
+                    if test_line:
+                        test_reader = csv.DictReader([test_line], dialect=sniffed)
+                        if test_reader.fieldnames and len(test_reader.fieldnames) > 1:
+                            dialect = sniffed
+                except Exception:
+                    pass
 
             reader = csv.DictReader(fh, dialect=dialect)
             if reader.fieldnames is None:
                 logger.debug("CSV %s has no header row", path.name)
                 return
 
+            fieldnames = list(reader.fieldnames)
+
+            # Route Plaso l2tcsv → dedicated parser
+            if _is_plaso_csv(fieldnames):
+                logger.info("Detected Plaso l2tcsv format: %s", path.name)
+                from nighteye.ingest.srl2015 import _parse_plaso_row
+                for row in reader:
+                    count += 1
+                    if count > 5_000_000:
+                        logger.warning("CSV %s exceeded 5M rows; truncating", path.name)
+                        return
+                    doc = _parse_plaso_row(row, host_name)
+                    if doc:
+                        yield doc
+                logger.debug("Parsed %d Plaso rows from %s", count, path.name)
+                return
+
+            # Route Shimcache CSV → dedicated parser
+            if _is_shimcache_csv(fieldnames):
+                logger.info("Detected Shimcache CSV format: %s", path.name)
+                from nighteye.ingest.srl2015 import _parse_shimcache_row
+                for row in reader:
+                    count += 1
+                    if count > 5_000_000:
+                        logger.warning("CSV %s exceeded 5M rows; truncating", path.name)
+                        return
+                    doc = _parse_shimcache_row(row, host_name)
+                    if doc:
+                        yield doc
+                logger.debug("Parsed %d Shimcache rows from %s", count, path.name)
+                return
+
+            # In precooked/timeline directories we only want Plaso CSVs.
+            # Other timeline exports (mactime, supertimeline, etc.) are
+            # redundant and produce low-value generic docs.
+            path_lower = str(path).lower().replace("\\", "/")
+            if "/precooked/timeline/" in path_lower:
+                logger.debug("Skipping non-Plaso CSV in precooked/timeline: %s", path.name)
+                return
+
+            # Generic CSV fallback
             for row in reader:
                 count += 1
                 if count > 5_000_000:
