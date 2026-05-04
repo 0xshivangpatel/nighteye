@@ -177,8 +177,18 @@ def _is_masquerading(event: CanonicalEvent) -> bool:
         if not proc_name or not proc_path:
             return False
         # svchost.exe outside System32 → almost always malicious masquerade.
-        if proc_name == "svchost.exe" and "system32" not in proc_path:
-            return True
+        # Also catches svchost in subdirectories of System32 (e.g.,
+        # C:\Windows\System32\dllhost\svchost.exe).
+        if proc_name == "svchost.exe":
+            if "system32" not in proc_path:
+                return True
+            # svchost.exe should be directly in \system32\, not a subdirectory
+            norm = proc_path.replace("/", "\\")
+            idx = norm.find("\\system32\\")
+            if idx >= 0:
+                remaining = norm[idx + len("\\system32\\"):]
+                if remaining and not remaining.startswith("svchost.exe"):
+                    return True
         # lsass.exe outside System32, conhost outside System32, etc.
         if proc_name in {"lsass.exe", "smss.exe", "csrss.exe", "wininit.exe", "services.exe"}:
             if "system32" not in proc_path:

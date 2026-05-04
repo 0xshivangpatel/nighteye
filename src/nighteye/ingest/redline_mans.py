@@ -71,25 +71,45 @@ def _parse_processes(conn: sqlite3.Connection, host: str) -> Iterator[dict[str, 
     for row in cur:
         r = _row_to_dict(cur, row)
         proc_name = r.get("ProcessName") or ""
-        proc_path = r.get("Path") or ""
-        pid = r.get("PID")
-        ppid = r.get("ParentPID")
-        args = r.get("Arguments") or ""
-        cmdline = f"{proc_path} {args}".strip() if args else proc_path
+        proc_path = r.get("Path") or ""  # working directory
+
+        # Arguments is the full command line including executable.
+        # Extract the real executable path from it.
+        args = (r.get("Arguments") or "").strip()
+        if args and not proc_name:
+            proc_name = args.split("\\")[-1].split(" ")[0].strip('"')
+
+        # Try to extract executable from Arguments
+        executable = ""
+        cmdline = args
+        if args:
+            import shlex
+            try:
+                tokens = shlex.split(args)
+                if tokens:
+                    executable = tokens[0]
+            except Exception:
+                # Fallback: first space-delimited token, strip quotes
+                executable = args.split(" ", 1)[0].strip('"\'')
+
+        # If no Arguments, use Path as executable
+        if not executable and proc_path:
+            executable = proc_path + "\\" + proc_name if proc_name else proc_path
+
         yield build_ecs_doc(
             timestamp=_ts(r.get("StartTime")),
             host_name=host,
             event_action="process-started",
             event_category=["process"],
-            process_pid=pid,
-            process_parent_pid=ppid,
+            process_pid=r.get("PID"),
+            process_parent_pid=r.get("ParentPID"),
             process_name=proc_name,
-            process_executable=proc_path,
-            process_command_line=cmdline,
+            process_executable=executable,
+            process_command_line=cmdline if cmdline else executable,
             user_name=r.get("Username") or "",
             user_id=r.get("SID") or "",
             extra={
-                "redline": {"hidden": r.get("Hidden") or "False"},
+                "redline": {"hidden": r.get("Hidden") or "False", "working_dir": proc_path},
             },
         )
 
