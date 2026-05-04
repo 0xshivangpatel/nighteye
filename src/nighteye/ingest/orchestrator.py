@@ -75,10 +75,10 @@ _NON_HOST_DIRS: frozenset[str] = frozenset({
     "appdata", "local", "roaming", "temp",
     "evidence", "triage", "kape", "output", "results",
     "logs", "evtx", "registry", "memory", "prefetch",
-    "timeline", "filesystem", "artifacts",
+    "timeline", "filesystem",
     "winevt", "config", "regback",
-    "apache2", "apache", "nginx", "iis", "www", "html",
     "bulk", "color", "template", "shadow", "volume",
+    "precooked", "shimcache", "amcache",
     # Common SRL / FOR508 structure dirs
     "c_drive", "exports", "mounted",
 })
@@ -95,6 +95,7 @@ _TRIAGE_MARKERS: frozenset[str] = frozenset({
     "c", "c_drive", "filesystem", "eventlogs",
     "registry", "prefetch", "amcache", "shimcache",
     "srum", "mft", "usnjrnl",
+    "precooked", "timeline", "evtx",
 })
 
 
@@ -233,24 +234,14 @@ def resolve_host_name(
     for part in parts:
         if part.lower() in _NON_HOST_DIRS or part.lower() in _TRIAGE_MARKERS:
             break  # Don't scan into system directories
-# Skip parts that match non-host fragments (nighteye, win7, etc.)
-        lower_part = part.lower().replace("_", "-")
-        skip = False
-        for frag in _NON_HOST_FRAGMENTS:
-            if frag in lower_part:
-                skip = True
-                break
-        if skip:
-            continue
-        segments = lower_part.split("-")
+        segments = part.lower().replace("_", "-").split("-")
         for seg in segments:
             bad = {"nighteye", "win7", "win", "xp", "c", "drive", "32", "64", "86",
-                   "controller", "apache", "timeline", "template", "shadow", "volume",
+                   "timeline", "template", "shadow", "volume",
                    "color", "bulk", "agent"}
             if seg in bad or seg.isdigit():
                 continue
-# IP address segment — skip (handled by Strategy 2.6)
-            if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', seg):
+            if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', seg):
                 continue
             # Skip Windows version prefixes (win10, win2008r2, etc.)
             if seg.startswith("win") and any(c.isdigit() for c in seg):
@@ -261,8 +252,7 @@ def resolve_host_name(
     # Strategy 2.6: Extract IP from directory name fragments (lower priority than real hostnames)
     # E.g., "win7-32-nromanoff-10.3.58.5_nighteye" → "10.3.58.5"
     for part in parts:
-        import re as _re
-        ip_match = _re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
+        ip_match = re.search(r"(\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3}[\.\-]\d{1,3})", part)
         if ip_match:
             ip = ip_match.group(1).replace("-", ".")
             octets = ip.split(".")
