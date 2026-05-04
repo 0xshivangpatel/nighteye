@@ -335,13 +335,12 @@ def _sanitize_host(name: str) -> str:
 def _is_e01_extraction_dir(path: Path) -> bool:
     """Check whether *path* is a full-disk E01 extraction directory.
 
-    These directories contain millions of benign system files.
-    Scanning them produces nothing but metadata noise and cripples
-    performance.  We detect them by:
+    These directories contain benign system files that produce nothing
+    but metadata noise and cripple performance.  We detect them by:
 
     1. The ``.nighteye_extracted`` marker with an E01 source, OR
-    2. Name ending in ``_nighteye`` and containing a Windows system
-       directory (``Windows/System32`` or ``Windows/SysWOW64``).
+    2. Name ending in ``_nighteye`` and containing a ``Windows/``
+       directory (partial extractions may lack System32).
     """
     # Marker-based detection (exact)
     marker = path / ".nighteye_extracted"
@@ -353,9 +352,10 @@ def _is_e01_extraction_dir(path: Path) -> bool:
         except OSError:
             pass
 
-    # Heuristic: name ends with _nighteye and looks like a full Windows image
+    # Heuristic: name ends with _nighteye and looks like a full / partial
+    # Windows image (Windows/ directory present, even without System32).
     if path.name.lower().endswith("_nighteye"):
-        if (path / "Windows" / "System32").is_dir() or (path / "Windows" / "SysWOW64").is_dir():
+        if (path / "Windows").is_dir():
             return True
 
     return False
@@ -455,9 +455,34 @@ def build_ingest_plan(
             is_extraction = "extractions" in str(root).lower()
             effective_recursive = True if is_extraction else recursive
             
-            scan_fn = root.rglob if effective_recursive else root.glob
             archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01", ".ex01", ".e02"}
-            for item in sorted(scan_fn("*")):
+
+            def _walk(root_dir: Path):
+                """Walk directory tree, pruning E01 extraction subtrees."""
+                import os
+                for dirpath_str, dirnames, filenames in os.walk(str(root_dir), topdown=True):
+                    dirpath = Path(dirpath_str)
+                    # Prune E01 extraction subtrees — don't recurse into
+                    # full-disk Windows images millions of benign files deep.
+                    dirnames_copy = dirnames[:]
+                    for dn in dirnames_copy:
+                        child_dir = dirpath / dn
+                        if child_dir.resolve() in discovered_paths:
+                            dirnames.remove(dn)
+                            continue
+                        if _is_e01_extraction_dir(child_dir) or _inside_e01_extraction(child_dir, root_dir):
+                            dirnames.remove(dn)
+                    # Yield regular files
+                    for fn in sorted(filenames):
+                        yield Path(dirpath_str) / fn
+                    # Yield non-E01 directories
+                    for dn in sorted(dirnames):
+                        yield Path(dirpath_str) / dn
+                    # Only recurse if allowed
+                    if not effective_recursive and root_dir != dirpath:
+                        dirnames.clear()
+
+            for item in _walk(root):
                 item_resolved = item.resolve()
                 if item_resolved in discovered_paths:
                     continue

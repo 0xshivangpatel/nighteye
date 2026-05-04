@@ -53,12 +53,17 @@ _COMPUTER_MAP: dict[str, str] = {
 
 
 def _canonical_host(host_val: str, default: str = "unknown") -> str:
-    """Map a Plaso host column to NightEye canonical host name."""
+    """Map a Plaso host column to NightEye canonical host name.
+
+    The CSV *host* column is the original Windows computer name.
+    We try to map it to a known canonical host; if no mapping exists
+    we trust the path-resolved *default* hostname (which comes from
+    NightEye's host resolution) over an unknown Windows hostname.
+    """
     if not host_val or host_val == "-":
         return default
-    # Strip domain suffix
     bare = host_val.split(".")[0]
-    return _COMPUTER_MAP.get(bare, bare.lower())
+    return _COMPUTER_MAP.get(bare, default)
 
 
 # ------------------------------------------------------------------
