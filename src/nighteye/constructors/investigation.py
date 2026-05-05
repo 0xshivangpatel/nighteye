@@ -25,7 +25,6 @@ from typing import Any
 from nighteye.db import connect, execute_with_retry, transaction
 from nighteye.hypothesis_lifecycle import (
     challenge_hypothesis,
-    approve_hypothesis,
 )
 from nighteye.correlation.root_cause import find_root_cause
 
@@ -111,37 +110,14 @@ def run_investigation_phase(db_path: str, case_id: str, examiner: str) -> dict[s
         conn.commit()
 
         # ----------------------------------------------------------------
-        # Phase 3: Approve SUPPORTED hypotheses
-        # ----------------------------------------------------------------
-        approved_rows = conn.execute(
-            """SELECT hypothesis_id, confidence_tier, title, challenge_verdict,
-                      challenge_reasoning
-               FROM hypotheses
-               WHERE case_id = ? AND status = 'DRAFT'
-                 AND challenge_verdict = 'SUPPORTED'""",
-            (case_id,),
-        ).fetchall()
-
-        for row in approved_rows:
-            hid = row["hypothesis_id"]
-            try:
-                approve_hypothesis(conn, hid, examiner)
-                stats["approved"] += 1
-                logger.info("  Approved %s", hid[:40])
-            except Exception as exc:
-                logger.warning("  Approve failed %s: %s", hid[:40], exc)
-
-        conn.commit()
-
-        # ----------------------------------------------------------------
-        # Phase 3: NOTE — approval is deferred to the MCP agent.
+        # Phase 3: Approval is DEFERRED to the MCP agent.
         # SUPPORTED hypotheses stay DRAFT. The LLM decides which to
         # approve after cross-referencing evidence via MCP tools.
+        # (was: auto-approving all SUPPORTED — removed)
         # ----------------------------------------------------------------
-        # (approval code removed — was auto-approving all SUPPORTED)
 
         # ----------------------------------------------------------------
-        # Phase 5: Root cause analysis
+        # Phase 4: Root cause analysis
         # ----------------------------------------------------------------
         if stats["approved"] > 0:
             try:
