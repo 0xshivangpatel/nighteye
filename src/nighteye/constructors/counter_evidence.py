@@ -81,17 +81,65 @@ def _auto_load_whitelists() -> int:
 
 
 _WHITELIST_LOADED = False
+_REDLINE_MD5_MAP: dict[str, str] = {}  # path → md5
 
 
 def _ensure_whitelist_loaded() -> int:
-    """Lazy-load whitelists on first access."""
+    """Lazy-load whitelists and Redline MD5 map on first access."""
     global _WHITELIST_LOADED
     if _WHITELIST_LOADED:
         return len(_KNOWN_GOOD_MD5)
     _WHITELIST_LOADED = True
     total = _auto_load_whitelists()
-    logger.info("Counter-evidence module loaded: %d known-good hashes", total)
+    _load_redline_md5_map()
+    logger.info("Counter-evidence loaded: %d known-good hashes, %d path→MD5 entries",
+                total, len(_REDLINE_MD5_MAP))
     return total
+
+
+def _load_redline_md5_map() -> None:
+    """Extract path→MD5 mappings from Redline .mans ProcessSections table."""
+    import sqlite3 as _sql
+    candidates = [
+        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015/win7-32-nromanoff-10.3.58.5_nighteye/win7-32-nromanoff-c-drive/precooked/redline/nromanoff.mans"),
+        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015/xp-tdungan-10.3.58.7_nighteye/xp-tdungan-c-drive/precooked/redline/xp_tdungan.mans"),
+    ]
+    total = 0
+    for mans_path in candidates:
+        if not mans_path.exists():
+            continue
+        try:
+            conn = _sql.connect(str(mans_path))
+            # ProcessSections has SectionPath + MD5
+            for row in conn.execute(
+                "SELECT SectionPath, MD5 FROM ProcessSections WHERE MD5 IS NOT NULL AND MD5 != ''"
+            ):
+                path = (row[0] or "").strip()
+                md5 = (row[1] or "").strip().lower()
+                if path and len(md5) == 32:
+                    # Normalize: lowercase, backslashes
+                    norm = path.lower().replace("/", "\\")
+                    _REDLINE_MD5_MAP[norm] = md5
+                    total += 1
+            # Also try Drivers table
+            try:
+                for row in conn.execute(
+                    "SELECT DriverPath, MD5 FROM Drivers WHERE MD5 IS NOT NULL AND MD5 != ''"
+                ):
+                    path = (row[0] or "").strip()
+                    md5 = (row[1] or "").strip().lower()
+                    if path and len(md5) == 32:
+                        norm = path.lower().replace("/", "\\")
+                        if norm not in _REDLINE_MD5_MAP:
+                            _REDLINE_MD5_MAP[norm] = md5
+                            total += 1
+            except _sql.OperationalError:
+                pass
+            conn.close()
+        except Exception as exc:
+            logger.debug("Redline MD5 load skipped for %s: %s", mans_path.name, exc)
+    if total:
+        logger.info("Loaded %d path→MD5 entries from Redline .mans files", total)
 
 
 def is_known_good_hash(md5: str) -> bool:
@@ -112,13 +160,21 @@ def is_known_good_hash(md5: str) -> bool:
 def counter_known_good_hash(cluster: Any, db: Any) -> tuple[bool, str]:
     """Check if any process in the cluster has a known-good MD5 hash.
 
+    Checks three sources:
+    1. event.raw_data["process"]["hash"]["md5"]
+    2. Redline .mans ProcessSections → path→MD5 lookup
+    3. Direct MD5 from event fields
+
     Returns (applies, evidence_text).
     """
+    _ensure_whitelist_loaded()
     from nighteye.canonical.types import CanonicalType
     for evt in cluster.events:
         if evt.canonical_type != CanonicalType.PROCESS_EXECUTION:
             continue
-        # Check if the raw data has an MD5 hash
+        proc_path = (evt.process_path or "").lower().replace("/", "\\")
+        
+        # 1. Direct MD5 from raw data
         raw = evt.raw_data or {}
         md5 = (raw.get("process", {}).get("hash", {}).get("md5", "")
                or raw.get("process_hash", "")
@@ -126,6 +182,20 @@ def counter_known_good_hash(cluster: Any, db: Any) -> tuple[bool, str]:
                or raw.get("md5", ""))
         if md5 and is_known_good_hash(md5):
             return True, f"Process {evt.process_name} has known-good MD5 {md5}"
+        
+        # 2. Path→MD5 lookup from Redline .mans
+        if proc_path and proc_path in _REDLINE_MD5_MAP:
+            md5 = _REDLINE_MD5_MAP[proc_path]
+            if is_known_good_hash(md5):
+                return True, f"Process {evt.process_name} at {proc_path} matched known-good MD5 {md5} (Redline)"
+        
+        # 3. File name match in Redline map
+        proc_name = (evt.process_name or "").lower()
+        if proc_path and proc_name:
+            for rpath, md5 in _REDLINE_MD5_MAP.items():
+                if proc_name in rpath and rpath.endswith(proc_path.rstrip("\\").split("\\")[-1]):
+                    if is_known_good_hash(md5):
+                        return True, f"Process {proc_name} matched {rpath} MD5={md5} (known-good)"
     return False, ""
 
 
