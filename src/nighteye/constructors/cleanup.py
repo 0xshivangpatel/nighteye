@@ -380,7 +380,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                     """INSERT INTO journal (entry_id, case_id, timestamp, entry_type,
                        summary, details, agent_session_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (f"HYPOTHESIS_RECORDED-{case_id}-{now[:16]}-{hypothesis_id[:8]}",
+                    (f"hyprec-{case_id}-{hypothesis_id[-16:]}",
                      case_id, now, "HYPOTHESIS_RECORDED",
                      f"Recorded hypothesis: {title[:80]}",
                      json.dumps({"hypothesis_id": hypothesis_id, "status": actual_status,

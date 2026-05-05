@@ -36,11 +36,14 @@ logger = logging.getLogger("nighteye.investigation")
 _AGENT_SESSION = "auto-investigation-v1"
 
 
+_JOURNAL_COUNTER = [0]
+
 def _journal(conn: Any, case_id: str, entry_type: str, summary: str,
              details: dict | None = None) -> None:
     """Write a journal entry matching MCP tool schemas."""
     now = datetime.now(timezone.utc).isoformat()
-    eid = f"{entry_type}-{case_id}-{now[:16]}"
+    _JOURNAL_COUNTER[0] += 1
+    eid = f"{entry_type}-{case_id}-{_JOURNAL_COUNTER[0]:04d}"
     execute_with_retry(
         conn,
         """INSERT INTO journal (entry_id, case_id, timestamp, entry_type,
