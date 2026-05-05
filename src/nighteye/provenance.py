@@ -46,7 +46,7 @@ PROVENANCE_WEIGHTS: dict[ProvenanceTier, int] = {
 
 # Prefixes used to classify audit IDs by their origin.
 _MCP_PREFIX = "nighteye-"
-_HOOK_PREFIXES = ("hook-", "ingest-", "constructor-")
+_HOOK_PREFIXES = ("hook-", "ingest-", "constructor-", "auto-seed-")
 _SHELL_PREFIXES = ("shell-", "manual-", "cli-")
 
 

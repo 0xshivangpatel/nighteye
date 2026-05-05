@@ -327,7 +327,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             })
 
             # Create audit entry so provenance gate passes
-            audit_id = f"nighteye-auto-{cluster_id[:16]}"
+            audit_id = f"auto-seed-{cluster_id[:16]}"
             execute_with_retry(
                 conn,
                 """

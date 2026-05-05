@@ -1,0 +1,155 @@
+"""Counter-evidence baselines — whitelist hashes, known-good paths.
+
+Loads MD5 hash whitelists from Redline precooked data and known-good
+Windows system paths. Provides counter-signal evaluators that can fire
+REFUTED verdicts on clusters when evidence matches known-good baselines.
+
+References:
+    - docs/ARCHITECTURE.md § 8 (Counter-Signals)
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger("nighteye.constructors.counter_evidence")
+
+# ---------------------------------------------------------------------------
+# Known-good hash baseline (loaded at module import)
+# ---------------------------------------------------------------------------
+
+_KNOWN_GOOD_MD5: set[str] = set()
+
+# Canonical Windows system paths (processes here are usually legitimate)
+_SYSTEM_PATHS: frozenset[str] = frozenset({
+    "\\windows\\system32\\", "\\windows\\syswow64\\",
+    "\\program files\\", "\\program files (x86)\\",
+    "\\windows\\winsxs\\",
+})
+
+# Processes that legitimately live in System32
+_SYSTEM32_PROCESSES: frozenset[str] = frozenset({
+    "svchost.exe", "lsass.exe", "csrss.exe", "smss.exe", "wininit.exe",
+    "services.exe", "spoolsv.exe", "winlogon.exe", "explorer.exe",
+    "taskhost.exe", "dwm.exe", "conhost.exe", "rundll32.exe",
+    "taskmgr.exe", "regedit.exe", "cmd.exe", "powershell.exe",
+    "msiexec.exe", "wuauclt.exe", "trustedinstaller.exe",
+})
+
+
+def load_whitelist(whitelist_path: Path) -> int:
+    """Load a Mandiant Redline MD5 whitelist file. Returns count of hashes loaded."""
+    if not whitelist_path.exists():
+        logger.warning("Whitelist not found: %s", whitelist_path)
+        return 0
+
+    count = 0
+    with open(whitelist_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Format is just MD5 per line
+            if len(line) == 32 and all(c in "0123456789abcdef" for c in line.lower()):
+                _KNOWN_GOOD_MD5.add(line.lower())
+                count += 1
+
+    logger.info("Loaded %d known-good MD5 hashes from %s", count, whitelist_path.name)
+    return count
+
+
+def load_all_whitelists(base_dir: Path) -> int:
+    """Find and load all m-whitelist-*.txt files under base_dir. Returns total count."""
+    total = 0
+    for p in base_dir.rglob("m-whitelist-*.txt"):
+        total += load_whitelist(p)
+    return total
+
+
+def _auto_load_whitelists() -> int:
+    """Try to auto-load whitelists from common SRL 2015 paths."""
+    paths = [
+        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015"),
+    ]
+    total = 0
+    for base in paths:
+        if base.exists():
+            total += load_all_whitelists(base)
+    return total
+
+
+_WHITELIST_LOADED = False
+
+
+def _ensure_whitelist_loaded() -> int:
+    """Lazy-load whitelists on first access."""
+    global _WHITELIST_LOADED
+    if _WHITELIST_LOADED:
+        return len(_KNOWN_GOOD_MD5)
+    _WHITELIST_LOADED = True
+    total = _auto_load_whitelists()
+    logger.info("Counter-evidence module loaded: %d known-good hashes", total)
+    return total
+
+
+def is_known_good_hash(md5: str) -> bool:
+    """Check if an MD5 hash is in the known-good whitelist."""
+    _ensure_whitelist_loaded()
+    return md5.lower() in _KNOWN_GOOD_MD5
+    """Find and load all m-whitelist-*.txt files under base_dir. Returns total count."""
+    total = 0
+    for p in base_dir.rglob("m-whitelist-*.txt"):
+        total += load_whitelist(p)
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Counter-signal evaluators — usable by any constructor
+# ---------------------------------------------------------------------------
+
+def counter_known_good_hash(cluster: Any, db: Any) -> tuple[bool, str]:
+    """Check if any process in the cluster has a known-good MD5 hash.
+
+    Returns (applies, evidence_text).
+    """
+    from nighteye.canonical.types import CanonicalType
+    for evt in cluster.events:
+        if evt.canonical_type != CanonicalType.PROCESS_EXECUTION:
+            continue
+        # Check if the raw data has an MD5 hash
+        raw = evt.raw_data or {}
+        md5 = (raw.get("process", {}).get("hash", {}).get("md5", "")
+               or raw.get("process_hash", "")
+               or raw.get("hash", "")
+               or raw.get("md5", ""))
+        if md5 and is_known_good_hash(md5):
+            return True, f"Process {evt.process_name} has known-good MD5 {md5}"
+    return False, ""
+
+
+def counter_system_legitimate_path(cluster: Any, db: Any) -> tuple[bool, str]:
+    """Check if the process runs from a legitimate system path.
+
+    A process in System32 with a matching SYSTEM32_PROCESS name is
+    almost certainly a false positive for masquerading detection.
+    Returns (applies, evidence_text).
+    """
+    from nighteye.canonical.types import CanonicalType
+    for evt in cluster.events:
+        if evt.canonical_type != CanonicalType.PROCESS_EXECUTION:
+            continue
+        proc_path = (evt.process_path or "").lower().replace("/", "\\")
+        proc_name = (evt.process_name or "").lower()
+
+        if not proc_path or not proc_name:
+            continue
+
+        for sys_path in _SYSTEM_PATHS:
+            if sys_path in proc_path and proc_name in _SYSTEM32_PROCESSES:
+                return True, (
+                    f"Process {proc_name} at {proc_path} is a legitimate "
+                    f"Windows system binary in a system directory"
+                )
+    return False, ""

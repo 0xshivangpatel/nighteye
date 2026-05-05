@@ -152,8 +152,17 @@ def record_hypothesis(
         raise ValueError("No audit trail for evidence - hypothesis rejected")
 
     # Gate 4: Anti-forensic (do this before confidence for penalty)
+    # Extract evidence timestamp from the suggested cluster
+    ref_ts = None
+    if suggested_by_cluster:
+        cluster_row = db_conn.execute(
+            "SELECT time_start FROM clusters WHERE cluster_id = ?",
+            (suggested_by_cluster,),
+        ).fetchone()
+        if cluster_row and cluster_row["time_start"]:
+            ref_ts = cluster_row["time_start"]
     af_nearby, af_penalty, af_reason = _check_anti_forensic_gate(
-        evidence_refs, case_id, db_conn
+        evidence_refs, case_id, db_conn, reference_ts=ref_ts
     )
 
     # Compute confidence
@@ -297,9 +306,17 @@ def challenge_hypothesis(
             counter_evidence = json.loads(row["counter_evidence_details"] or "[]")
             contradictions = json.loads(row["contradicting_clusters"] or "[]")
 
-    # Anti-forensic proximity check
+    # Anti-forensic proximity check — use cluster time_start as reference
+    ref_ts = None
+    if hypothesis.suggested_by_cluster:
+        cluster_row = db_conn.execute(
+            "SELECT time_start FROM clusters WHERE cluster_id = ?",
+            (hypothesis.suggested_by_cluster,),
+        ).fetchone()
+        if cluster_row and cluster_row["time_start"]:
+            ref_ts = cluster_row["time_start"]
     af_nearby, _, _ = _check_anti_forensic_gate(
-        hypothesis.evidence_refs, hypothesis.case_id, db_conn
+        hypothesis.evidence_refs, hypothesis.case_id, db_conn, reference_ts=ref_ts
     )
 
     # Causal chain integrity
