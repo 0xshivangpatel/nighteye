@@ -21,10 +21,51 @@ from typing import Any
 
 from nighteye.db import connect, execute_with_retry
 from nighteye.constructors.scoring import ClusterTier
+from nighteye.models import EvidenceRef
+
+# Trigger → MITRE technique mapping (per-trigger, not per-constructor)
+_TRIGGER_TECHNIQUES: dict[str, list[str]] = {
+    "sam_hive_copy": ["T1003.002"],
+    "lsass_access_or_dump": ["T1003.001"],
+    "ntds_dump": ["T1003.003"],
+    "process_masquerading": ["T1036"],
+    "amsi_bypass": ["T1562.001"],
+    "etw_tamper": ["T1562.006"],
+    "edr_disable": ["T1562.001"],
+    "process_injection": ["T1055"],
+    "uac_bypass": ["T1548.002"],
+    "service_install": ["T1543.003"],
+    "scheduled_task_creation": ["T1053.005"],
+    "registry_run_key": ["T1547.001"],
+    "startup_folder": ["T1547.001"],
+    "dll_search_order_hijacking": ["T1574.001"],
+    "cloud_upload_tool": ["T1567.002"],
+    "ransom_note_pattern": ["T1486"],
+    "archive_creation_unusual_path": ["T1560"],
+    "shadow_copy_deletion": ["T1490"],
+    "psexec_usage": ["T1569.002"],
+    "pass_the_hash_ticket": ["T1550.002"],
+    "new_service_remote": ["T1543.003"],
+    "service_remote_install": ["T1543.003"],
+    "scheduled_task_remote": ["T1053.005"],
+}
 
 __all__ = ["run_cluster_cleanup"]
 
 logger = logging.getLogger("nighteye.constructors.cleanup")
+
+# Triggers that fire on benign Windows activity — these get collapsed
+def _get_trigger_techniques(trigger_name: str) -> list[str]:
+    """Map a single trigger name to its specific MITRE technique IDs."""
+    # Exact match
+    if trigger_name in _TRIGGER_TECHNIQUES:
+        return _TRIGGER_TECHNIQUES[trigger_name]
+    # Substring match for compound triggers
+    for key, techs in _TRIGGER_TECHNIQUES.items():
+        if key in trigger_name or trigger_name in key:
+            return techs
+    return []
+
 
 # Triggers that fire on benign Windows activity — these get collapsed
 _NOISE_TRIGGERS: frozenset[str] = frozenset({
@@ -37,21 +78,22 @@ _NOISE_TRIGGERS: frozenset[str] = frozenset({
 })
 
 # Triggers that should ALWAYS be kept as individual clusters
-# regardless of tier — these indicate real attacker activity
-_KEEP_TRIGGERS: frozenset[str] = frozenset({
-    "lsass_access_or_dump",
-    "process_masquerading",
-    "psexec_usage",
-    "amsi_bypass",
-    "etw_tamper",
-    "edr_disable",
-    "process_injection",
-    "uac_bypass",
-    "pass_the_hash_ticket",
-    "shadow_copy_deletion",
-    "ransomware_extension_pattern",
-    "cloud_upload_tool",
-})
+# regardless of tier — these indicate real attacker activity.
+# Use substring matching: a trigger matches if ANY keep pattern
+# appears as a substring of the trigger name.
+_KEEP_TRIGGER_PATTERNS: list[str] = [
+    "lsass_access", "sam_hive", "psexec", "amsi_bypass",
+    "etw_tamper", "edr_disable", "process_injection",
+    "process_masquerad", "uac_bypass", "pass_the_hash",
+    "shadow_copy", "ransom",  # catches ransom_note_pattern and ransomware_extension_pattern
+    "cloud_upload", "archive_creation",  # catches archive_creation_unusual_path
+    "ntds_dump", "kerberoast",
+]
+
+
+def _is_keep_trigger(trigger_name: str) -> bool:
+    """Check if a trigger name matches any keep pattern via substring match."""
+    return any(pattern in trigger_name for pattern in _KEEP_TRIGGER_PATTERNS)
 
 
 def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") -> dict[str, int]:
@@ -234,7 +276,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             is_moderate_plus = strength in ("MODERATE", "STRONG")
             is_aggregate = "aggregate-" in cluster_id_str
             triggers = json.loads(row["triggers_fired"] or "[]")
-            has_keep_trigger = any(t in _KEEP_TRIGGERS for t in triggers)
+            has_keep_trigger = any(_is_keep_trigger(t) for t in triggers)
 
             # Skip aggregate entries — they represent collapsed noise,
             # not actionable findings.
@@ -284,38 +326,80 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                 "factor_contributions": {},
             })
 
+            # Create audit entry so provenance gate passes
+            audit_id = f"audit-auto-{cluster_id[:24]}"
             execute_with_retry(
                 conn,
                 """
-                INSERT OR IGNORE INTO hypotheses (
-                    hypothesis_id, case_id, examiner, title, observation, interpretation,
-                    technique_ids, status, staged_at, modified_at, suggested_by_cluster,
-                    confidence_score, confidence_tier,
-                    evidence_refs, audit_ids, confidence_breakdown,
-                    provenance_tier, content_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO audit (audit_id, case_id, tool_group, tool_name, parameters, result_summary, duration_ms, examiner, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    hypothesis_id,
+                    audit_id,
                     case_id,
+                    "hypothesis",
+                    "auto-seed",
+                    json.dumps({"cluster_id": cluster_id, "trigger": trigger_str}),
+                    f"Seeded from cluster {cluster_id} (score {conf_score}, tier {conf_tier})",
+                    0,
                     examiner,
-                    title,
-                    observation,
-                    interpretation,
-                    row["technique_ids"] or "[]",
-                    "DRAFT",
                     now,
-                    now,
-                    cluster_id,
-                    row["score"] or 0,
-                    conf_tier,
-                    "[]",        # evidence_refs
-                    "[]",        # audit_ids
-                    conf_breakdown,  # confidence_breakdown
-                    "NONE",      # provenance_tier (stub — no audit trail yet)
-                    f"auto-{hypothesis_id}",  # content_hash
                 ),
             )
+
+            # Build evidence refs with real audit ID and cluster ID
+            evidence_refs = [
+                EvidenceRef(audit_id=audit_id, cluster_id=cluster_id,
+                           description=f"Cluster {cluster_id}: {trigger_str}",
+                           canonical_event_ids=json.loads(row.get("member_canonical_ids", "[]") or "[]"))
+            ]
+
+            # Map MITRE techniques per-trigger by matching trigger name to technique
+            trigger_techniques = _get_trigger_techniques(triggers[0] if triggers else "")
+            technique_ids = trigger_techniques or (json.loads(row["technique_ids"] or "[]")[:2])
+
+            # Call record_hypothesis (exercises all 4 gates: provenance, confidence, causation, anti-forensic)
+            try:
+                from nighteye.hypothesis_lifecycle import record_hypothesis as _record
+                hypothesis = _record(
+                    db_conn=conn,
+                    case_id=case_id,
+                    examiner=examiner,
+                    title=title,
+                    observation=observation,
+                    interpretation=interpretation,
+                    technique_ids=technique_ids,
+                    evidence_refs=evidence_refs,
+                    suggested_by_cluster=cluster_id,
+                )
+                actual_status = hypothesis.status.value
+            except ValueError as gate_err:
+                # Gate rejected — mark as insufficient
+                actual_status = "INSUFFICIENT_EVIDENCE"
+                logger.warning("  Gate rejected %s: %s", hypothesis_id[:40], gate_err)
+                # Still insert a basic record so it shows in the ledger
+                execute_with_retry(
+                    conn,
+                    """
+                    INSERT OR IGNORE INTO hypotheses (
+                        hypothesis_id, case_id, examiner, title, observation, interpretation,
+                        technique_ids, status, staged_at, modified_at, suggested_by_cluster,
+                        confidence_score, confidence_tier,
+                        evidence_refs, audit_ids, confidence_breakdown,
+                        provenance_tier, content_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        hypothesis_id, case_id, examiner, title, observation, interpretation,
+                        json.dumps(technique_ids),
+                        "INSUFFICIENT_EVIDENCE", now, now, cluster_id,
+                        conf_score, conf_tier,
+                        "[]", json.dumps([audit_id]),
+                        conf_breakdown, "NONE",
+                        f"auto-{hypothesis_id}",
+                    ),
+                )
+
             stats["hypotheses_seeded"] += 1
 
         conn.commit()

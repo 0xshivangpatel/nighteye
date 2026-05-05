@@ -250,8 +250,8 @@ class Hypothesis:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Hypothesis:
         confidence = None
-        if d.get("confidence"):
-            conf_data = d["confidence"]
+        if d.get("confidence_breakdown"):
+            conf_data = d["confidence_breakdown"]
             if isinstance(conf_data, str):
                 confidence = ConfidenceBreakdown.from_json(conf_data)
             else:

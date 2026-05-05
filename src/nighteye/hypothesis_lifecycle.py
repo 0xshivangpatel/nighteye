@@ -93,18 +93,24 @@ def _check_anti_forensic_gate(
     case_id: str,
     db_conn: Any,
     window_min: int = 15,
+    reference_ts: str | None = None,
 ) -> tuple[bool, int, str]:
-    """Gate 4: Anti-forensic proximity check."""
-    # Check if any evidence falls within an evidence_disturbance window
+    """Gate 4: Anti-forensic proximity check.
+
+    Checks if any evidence disturbance window overlaps with the
+    evidence timestamp. Uses ``reference_ts`` (ISO-8601) when
+    provided; falls back to current time only as a last resort.
+    """
+    ref_dt = reference_ts or datetime.now(timezone.utc).isoformat()
     for ref in evidence_refs:
         row = db_conn.execute(
             """
             SELECT COUNT(*) FROM evidence_disturbances
             WHERE case_id = ?
-            AND window_start <= datetime('now')
-            AND window_end >= datetime('now', ?)
+            AND window_start <= ?
+            AND window_end >= ?
             """,
-            (case_id, f"-{int(window_min)} minutes"),
+            (case_id, ref_dt, ref_dt),
         ).fetchone()
 
         if row and row[0] > 0:
