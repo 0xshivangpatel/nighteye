@@ -180,12 +180,20 @@ def counter_high_frequency_baseline(cluster: Any, db: Any) -> tuple[bool, str]:
         # Query the entity graph for frequency
         if db:
             try:
-                row = db.execute(
+                import sqlite3 as _sq
+                if isinstance(db, str):
+                    _conn = _sq.connect(db)
+                    _conn.row_factory = _sq.Row
+                else:
+                    _conn = db
+                row = _conn.execute(
                     """SELECT COUNT(*) as cnt FROM entities
                        WHERE entity_type = 'process'
                        AND canonical_key LIKE ?""",
                     (f"%{proc_name}%",),
                 ).fetchone()
+                if isinstance(db, str):
+                    _conn.close()
                 if row and row["cnt"] and row["cnt"] > _FREQ_THRESHOLD:
                     return True, (
                         f"Process '{proc_name}' appears {row['cnt']} times "
