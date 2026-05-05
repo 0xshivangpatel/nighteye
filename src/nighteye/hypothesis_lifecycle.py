@@ -727,7 +727,7 @@ def _persist_hypothesis(db_conn: Any, hypothesis: Hypothesis) -> None:
                         "cluster_id": r.cluster_id} for r in hypothesis.evidence_refs]),
             json.dumps(hypothesis.audit_ids),
             hypothesis.confidence.score if hypothesis.confidence else 0,
-            hypothesis.confidence.tier.value if hypothesis.confidence else ConfidenceTier.SPECULATIVE.value,
+            (hypothesis.confidence.tier.value if hypothesis.confidence and hypothesis.confidence.tier else ConfidenceTier.MEDIUM.value),
             hypothesis.confidence.to_json() if hypothesis.confidence else "{}",
             hypothesis.provenance_tier.value,
             json.dumps([{"target": c.target_hypothesis, "level": c.level.value,

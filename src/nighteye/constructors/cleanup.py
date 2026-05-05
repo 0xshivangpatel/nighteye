@@ -273,6 +273,16 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             # Map cluster strength to hypothesis confidence tier
             tier_map = {"STRONG": "HIGH", "MODERATE": "MEDIUM", "WEAK": "LOW"}
             conf_tier = tier_map.get(row["strength"] or "WEAK", "LOW")
+            conf_score = row["score"] or 0
+
+            # Proper confidence breakdown so Hypothesis model preserves tier
+            conf_breakdown = json.dumps({
+                "score": conf_score,
+                "tier": conf_tier,
+                "rationale": f"Auto-seeded from cluster {cluster_id} "
+                             f"({row['cluster_type']}, {row['strength']})",
+                "factor_contributions": {},
+            })
 
             execute_with_retry(
                 conn,
@@ -301,7 +311,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                     conf_tier,
                     "[]",        # evidence_refs
                     "[]",        # audit_ids
-                    "{}",        # confidence_breakdown
+                    conf_breakdown,  # confidence_breakdown
                     "NONE",      # provenance_tier (stub — no audit trail yet)
                     f"auto-{hypothesis_id}",  # content_hash
                 ),

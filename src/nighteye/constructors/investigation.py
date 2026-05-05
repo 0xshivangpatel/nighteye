@@ -101,7 +101,7 @@ def run_investigation_phase(db_path: str, case_id: str, examiner: str) -> dict[s
         if stats["approved"] > 0:
             try:
                 root_result = find_root_cause(case_id)
-                steps = root_result.get("chain", []) if isinstance(root_result, dict) else []
+                steps = root_result.get("kill_chain", []) if isinstance(root_result, dict) else []
                 stats["root_cause_steps"] = len(steps)
 
                 execute_with_retry(
