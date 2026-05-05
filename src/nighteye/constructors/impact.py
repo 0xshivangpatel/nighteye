@@ -15,6 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
 
 __all__ = ["ImpactConstructor"]
 
@@ -190,6 +191,8 @@ class ImpactConstructor(Constructor):
             CounterSignal("matched_documented_decommission", 15, _eval_documented_decommission),
             CounterSignal("within_av_quarantine_pattern", 12, _eval_av_quarantine),
             CounterSignal("matched_known_software_uninstall", 10, _eval_known_software_uninstall),
+            CounterSignal("known_good_hash", 15, counter_known_good_hash),
+            CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]
 
     def generate_summary(self, cluster: Cluster) -> None:

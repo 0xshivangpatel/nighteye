@@ -16,6 +16,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
 
 __all__ = ["BeaconingConstructor"]
 
@@ -241,6 +242,8 @@ class BeaconingConstructor(Constructor):
             CounterSignal("destination_in_corporate_baseline", 15, _eval_destination_in_baseline),
             CounterSignal("destination_is_software_updater", 12, _eval_destination_is_updater),
             CounterSignal("user_agent_matches_legitimate_app", 10, _eval_legitimate_user_agent),
+            CounterSignal("known_good_hash", 15, counter_known_good_hash),
+            CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]
 
     def generate_summary(self, cluster: Cluster) -> None:

@@ -15,6 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
 
 __all__ = ["CredentialAccessConstructor"]
 
@@ -237,6 +238,8 @@ class CredentialAccessConstructor(Constructor):
             CounterSignal("documented_security_audit", 12, _eval_documented_security_audit),
             CounterSignal("av_memory_scan", 12, _eval_av_memory_scan),
             CounterSignal("backup_software", 10, _eval_backup_software),
+            CounterSignal("known_good_hash", 15, counter_known_good_hash),
+            CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]
 
     def generate_summary(self, cluster: Cluster) -> None:
