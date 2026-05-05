@@ -374,6 +374,20 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                     suggested_by_cluster=cluster_id,
                 )
                 actual_status = hypothesis.status.value
+                # Write MCP-style HYPOTHESIS_RECORDED journal entry
+                execute_with_retry(
+                    conn,
+                    """INSERT INTO journal (entry_id, case_id, timestamp, entry_type,
+                       summary, details, agent_session_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (f"HYPOTHESIS_RECORDED-{case_id}-{now[:16]}-{hypothesis_id[:8]}",
+                     case_id, now, "HYPOTHESIS_RECORDED",
+                     f"Recorded hypothesis: {title[:80]}",
+                     json.dumps({"hypothesis_id": hypothesis_id, "status": actual_status,
+                                 "confidence_score": conf_score, "confidence_tier": conf_tier,
+                                 "suggested_by_cluster": cluster_id}),
+                     "auto-investigation-v1"),
+                )
             except ValueError as gate_err:
                 # Gate rejected — record as insufficient evidence
                 actual_status = "INSUFFICIENT_EVIDENCE"
