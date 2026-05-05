@@ -473,6 +473,7 @@ def save_cluster(db_path: str, case_id: str, cluster: Cluster) -> None:
                 triggers_fired = excluded.triggers_fired,
                 supporting_signals = excluded.supporting_signals,
                 counter_signals = excluded.counter_signals,
+                counter_evidence_details = excluded.counter_evidence_details,
                 time_end = excluded.time_end
             """,
             (
