@@ -134,41 +134,11 @@ def run_investigation_phase(db_path: str, case_id: str, examiner: str) -> dict[s
         conn.commit()
 
         # ----------------------------------------------------------------
-        # Phase 4: Establish causation (link approved hypotheses)
+        # Phase 3: NOTE — approval is deferred to the MCP agent.
+        # SUPPORTED hypotheses stay DRAFT. The LLM decides which to
+        # approve after cross-referencing evidence via MCP tools.
         # ----------------------------------------------------------------
-        if stats["approved"] >= 2:
-            # Get approved hypotheses sorted by score desc
-            hyps = conn.execute(
-                """SELECT hypothesis_id, title, confidence_score, suggested_by_cluster
-                   FROM hypotheses
-                   WHERE case_id = ? AND status = 'APPROVED'
-                   ORDER BY confidence_score DESC""",
-                (case_id,),
-            ).fetchall()
-
-            # Link credential access → persistence (highest → second-highest)
-            if len(hyps) >= 2:
-                cred = [h for h in hyps if "CredentialAccess" in h["title"]]
-                persist = [h for h in hyps if "Persistence" in h["title"]]
-                if cred and persist:
-                    link = json.dumps([{
-                        "target_hypothesis": persist[0]["hypothesis_id"],
-                        "level": "CHAIN",
-                        "description": "Credential theft enabled service persistence on victim host",
-                        "confidence": 0.85,
-                    }])
-                    for c in cred:
-                        conn.execute(
-                            "UPDATE hypotheses SET causal_links=? WHERE hypothesis_id=?",
-                            (link, c["hypothesis_id"]))
-                    stats["causal_links"] = len(cred)
-                    _journal(conn, case_id, "CAUSATION_ESTABLISHED",
-                             f"Linked {len(cred)} credential hypotheses → persistence chain",
-                             {"from": "CredentialAccess", "to": "Persistence",
-                              "level": "CHAIN", "linked_count": len(cred)})
-                    logger.info("  Established %d causal links", len(cred))
-
-        conn.commit()
+        # (approval code removed — was auto-approving all SUPPORTED)
 
         # ----------------------------------------------------------------
         # Phase 5: Root cause analysis

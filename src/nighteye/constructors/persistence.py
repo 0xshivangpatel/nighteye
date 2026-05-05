@@ -15,7 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
-from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path, counter_high_frequency_baseline
 
 __all__ = ["PersistenceConstructor"]
 
@@ -208,6 +208,7 @@ class PersistenceConstructor(Constructor):
             CounterSignal("signed_by_known_publisher", 12, _eval_signed_by_known_publisher),
             CounterSignal("documented_software_install", 10, _eval_documented_software_install),
             CounterSignal("gpo_deployment", 10, _eval_gpo_deployment),
+            CounterSignal("high_frequency_baseline", 25, counter_high_frequency_baseline),
             CounterSignal("known_good_hash", 15, counter_known_good_hash),
             CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]

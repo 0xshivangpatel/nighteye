@@ -15,7 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
-from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path, counter_high_frequency_baseline
 
 __all__ = ["CollectionConstructor"]
 
@@ -183,6 +183,7 @@ class CollectionConstructor(Constructor):
             CounterSignal("matched_backup_software_pattern", 12, _eval_backup_software),
             CounterSignal("within_indexing_service_pattern", 10, _eval_indexing_service),
             CounterSignal("user_documented_data_owner", 8, _eval_documented_data_owner),
+            CounterSignal("high_frequency_baseline", 25, counter_high_frequency_baseline),
             CounterSignal("known_good_hash", 15, counter_known_good_hash),
             CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]

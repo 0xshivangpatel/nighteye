@@ -15,7 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
-from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path, counter_high_frequency_baseline
 
 __all__ = ["LogClearingConstructor"]
 
@@ -158,6 +158,7 @@ class LogClearingConstructor(Constructor):
         return [
             CounterSignal("within_log_rotation_pattern", 15, _eval_log_rotation_pattern),
             CounterSignal("performed_by_documented_admin", 10, _eval_documented_admin),
+            CounterSignal("high_frequency_baseline", 25, counter_high_frequency_baseline),
             CounterSignal("known_good_hash", 15, counter_known_good_hash),
             CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]

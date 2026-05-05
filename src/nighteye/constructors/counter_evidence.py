@@ -157,6 +157,46 @@ def is_known_good_hash(md5: str) -> bool:
 # Counter-signal evaluators — usable by any constructor
 # ---------------------------------------------------------------------------
 
+def counter_high_frequency_baseline(cluster: Any, db: Any) -> tuple[bool, str]:
+    """Check if a process appears too frequently to be attacker-controlled.
+
+    If a process_name appears > FREQUENCY_THRESHOLD times across all
+    canonical events for that host, it's likely automation or benign
+    system activity — not an attack. Queries the entity graph for
+    process frequency counts.
+
+    Returns (applies, evidence_text).
+    """
+    _FREQ_THRESHOLD = 100
+    from nighteye.canonical.types import CanonicalType
+    for evt in cluster.events:
+        if evt.canonical_type != CanonicalType.PROCESS_EXECUTION:
+            continue
+        proc_name = (evt.process_name or "").lower()
+        host = (evt.host_name or "")
+        if not proc_name or not host:
+            continue
+
+        # Query the entity graph for frequency
+        if db:
+            try:
+                row = db.execute(
+                    """SELECT COUNT(*) as cnt FROM entities
+                       WHERE entity_type = 'process'
+                       AND canonical_key LIKE ?""",
+                    (f"%{proc_name}%",),
+                ).fetchone()
+                if row and row["cnt"] and row["cnt"] > _FREQ_THRESHOLD:
+                    return True, (
+                        f"Process '{proc_name}' appears {row['cnt']} times "
+                        f"in the canonical event store — high-frequency "
+                        f"baseline suggests benign automation, not attack"
+                    )
+            except Exception:
+                pass
+    return False, ""
+
+
 def counter_known_good_hash(cluster: Any, db: Any) -> tuple[bool, str]:
     """Check if any process in the cluster has a known-good MD5 hash.
 

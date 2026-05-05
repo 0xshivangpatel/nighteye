@@ -15,7 +15,7 @@ from typing import Any
 
 from nighteye.canonical.types import CanonicalEvent, CanonicalType
 from nighteye.constructors.base import Cluster, Constructor, CounterSignal, SignalRule, TriggerRule
-from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path
+from nighteye.constructors.counter_evidence import counter_known_good_hash, counter_system_legitimate_path, counter_high_frequency_baseline
 
 __all__ = ["RemoteExecutionConstructor"]
 
@@ -205,6 +205,7 @@ class RemoteExecutionConstructor(Constructor):
             CounterSignal("documented_sccm_activity", 12, _eval_documented_sccm),
             CounterSignal("documented_puppet_chef", 10, _eval_documented_puppet_chef),
             CounterSignal("help_desk_remote_support", 12, _eval_help_desk_remote_support),
+            CounterSignal("high_frequency_baseline", 25, counter_high_frequency_baseline),
             CounterSignal("known_good_hash", 15, counter_known_good_hash),
             CounterSignal("system_legitimate_path", 20, counter_system_legitimate_path),
         ]
