@@ -132,8 +132,9 @@ def counter_known_good_hash(cluster: Any, db: Any) -> tuple[bool, str]:
 def counter_system_legitimate_path(cluster: Any, db: Any) -> tuple[bool, str]:
     """Check if the process runs from a legitimate system path.
 
-    A process in System32 with a matching SYSTEM32_PROCESS name is
-    almost certainly a false positive for masquerading detection.
+    Only fires when the process binary is DIRECTLY in a system
+    directory — not in a subdirectory (e.g., system32\\svchost.exe
+    is legitimate; system32\\dllhost\\svchost.exe is masquerading).
     Returns (applies, evidence_text).
     """
     from nighteye.canonical.types import CanonicalType
@@ -146,10 +147,23 @@ def counter_system_legitimate_path(cluster: Any, db: Any) -> tuple[bool, str]:
         if not proc_path or not proc_name:
             continue
 
+        if proc_name not in _SYSTEM32_PROCESSES:
+            continue
+
         for sys_path in _SYSTEM_PATHS:
-            if sys_path in proc_path and proc_name in _SYSTEM32_PROCESSES:
-                return True, (
-                    f"Process {proc_name} at {proc_path} is a legitimate "
-                    f"Windows system binary in a system directory"
-                )
+            if sys_path not in proc_path:
+                continue
+            # Check that the binary is DIRECTLY in the system path
+            prefix_end = proc_path.index(sys_path) + len(sys_path)
+            remaining = proc_path[prefix_end:]
+            # If remaining contains a backslash → binary is in a subdirectory
+            if "\\" in remaining:
+                continue
+            # Binary must match the expected name
+            if not remaining.endswith(proc_name):
+                continue
+            return True, (
+                f"Process {proc_name} at {proc_path} is a legitimate "
+                f"Windows system binary directly in {sys_path}"
+            )
     return False, ""
