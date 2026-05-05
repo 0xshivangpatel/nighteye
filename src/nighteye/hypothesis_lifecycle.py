@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -212,7 +213,7 @@ def record_hypothesis(
         raise ValueError(causation_msg)
 
     # Build hypothesis
-    hypothesis_id = f"H-{examiner}-{now.strftime('%Y%m%d%H%M%S')}"
+    hypothesis_id = f"H-{examiner}-{now.strftime('%Y%m%d%H%M%S')}-{os.urandom(4).hex()}"
 
     # Compute content hash for tamper detection
     content = json.dumps({

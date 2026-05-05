@@ -138,7 +138,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                 continue
 
             # Keep clusters with high-value triggers regardless of score
-            if any(t in _KEEP_TRIGGERS for t in triggers):
+            if any(_is_keep_trigger(t) for t in triggers):
                 keep_rows.append(dict(row))
                 continue
 
@@ -260,7 +260,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             """
             SELECT cluster_id, cluster_type, strength, score, primary_host,
                    triggers_fired, supporting_signals, time_start, mitre_tactic,
-                   technique_ids, summary
+                   technique_ids, summary, member_canonical_ids
             FROM clusters
             WHERE case_id = ?
             """,
@@ -327,7 +327,7 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             })
 
             # Create audit entry so provenance gate passes
-            audit_id = f"audit-auto-{cluster_id[:24]}"
+            audit_id = f"nighteye-auto-{cluster_id[:16]}"
             execute_with_retry(
                 conn,
                 """
@@ -348,10 +348,11 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             )
 
             # Build evidence refs with real audit ID and cluster ID
+            member_ids = json.loads(row["member_canonical_ids"] or "[]") if "member_canonical_ids" in dict(row) else []
             evidence_refs = [
                 EvidenceRef(audit_id=audit_id, cluster_id=cluster_id,
                            description=f"Cluster {cluster_id}: {trigger_str}",
-                           canonical_event_ids=json.loads(row.get("member_canonical_ids", "[]") or "[]"))
+                           canonical_event_ids=member_ids)
             ]
 
             # Map MITRE techniques per-trigger by matching trigger name to technique
@@ -374,16 +375,15 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                 )
                 actual_status = hypothesis.status.value
             except ValueError as gate_err:
-                # Gate rejected — mark as insufficient
+                # Gate rejected — record as insufficient evidence
                 actual_status = "INSUFFICIENT_EVIDENCE"
                 logger.warning("  Gate rejected %s: %s", hypothesis_id[:40], gate_err)
-                # Still insert a basic record so it shows in the ledger
                 execute_with_retry(
                     conn,
                     """
                     INSERT OR IGNORE INTO hypotheses (
                         hypothesis_id, case_id, examiner, title, observation, interpretation,
-                        technique_ids, status, staged_at, modified_at, suggested_by_cluster,
+                        technique_ids, status, staged_at, modified_at,
                         confidence_score, confidence_tier,
                         evidence_refs, audit_ids, confidence_breakdown,
                         provenance_tier, content_hash
@@ -392,9 +392,10 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                     (
                         hypothesis_id, case_id, examiner, title, observation, interpretation,
                         json.dumps(technique_ids),
-                        "INSUFFICIENT_EVIDENCE", now, now, cluster_id,
+                        "INSUFFICIENT_EVIDENCE", now, now,
                         conf_score, conf_tier,
-                        "[]", json.dumps([audit_id]),
+                        json.dumps([{"audit_id": audit_id, "cluster_id": cluster_id}]),
+                        json.dumps([audit_id]),
                         conf_breakdown, "NONE",
                         f"auto-{hypothesis_id}",
                     ),
