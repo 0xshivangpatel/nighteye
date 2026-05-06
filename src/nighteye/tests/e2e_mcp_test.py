@@ -298,37 +298,51 @@ def test_mcp_tools(case: Any) -> tuple[bool, dict]:
     
     results = {}
     
+    # Test case tools
     try:
-        # Test case tools
-        from nighteye.mcp.tools.case_tools import list_cases_tool
-        case_result = list_cases_tool()
-        results['list_cases'] = case_result
-        logger.info("✓ list_cases_tool: %s", case_result.get('status', 'unknown'))
+        from nighteye.mcp.tools.case_tools import get_case_summary, list_hosts
+        case_result = get_case_summary(case_id=case.id)
+        results['get_case_summary'] = case_result
+        logger.info("✓ get_case_summary: %s", case_result.get('status', 'ok'))
+        
+        hosts_result = list_hosts(case_id=case.id)
+        results['list_hosts'] = hosts_result
+        logger.info("✓ list_hosts: %d hosts found", len(hosts_result.get('hosts', [])))
     except Exception as exc:
-        logger.warning("list_cases_tool failed: %s", exc)
-        results['list_cases'] = {"error": str(exc)}
+        logger.warning("Case tools failed: %s", exc)
+        results['case_tools'] = {"error": str(exc)}
     
+    # Test cluster tools
     try:
-        # Test cluster tools
-        from nighteye.mcp.tools.cluster_tools import triage_clusters
-        cluster_result = triage_clusters(case_id=case.id, min_strength="WEAK")
-        results['triage_clusters'] = cluster_result
-        logger.info("✓ triage_clusters: %d clusters found", 
+        from nighteye.mcp.tools.cluster_tools import list_clusters
+        cluster_result = list_clusters(case_id=case.id, min_strength="WEAK")
+        results['list_clusters'] = cluster_result
+        logger.info("✓ list_clusters: %d clusters found", 
                    len(cluster_result.get('clusters', [])))
     except Exception as exc:
-        logger.warning("triage_clusters failed: %s", exc)
-        results['triage_clusters'] = {"error": str(exc)}
+        logger.warning("list_clusters failed: %s", exc)
+        results['list_clusters'] = {"error": str(exc)}
     
+    # Test hypothesis tools
     try:
-        # Test hypothesis tools
-        from nighteye.mcp.tools.hypothesis_tools import list_hypotheses_tool
-        hyp_result = list_hypotheses_tool(case_id=case.id)
+        from nighteye.mcp.tools.hypothesis_tools import list_hypotheses
+        hyp_result = list_hypotheses(case_id=case.id)
         results['list_hypotheses'] = hyp_result
-        logger.info("✓ list_hypotheses_tool: %d hypotheses", 
+        logger.info("✓ list_hypotheses: %d hypotheses", 
                    len(hyp_result.get('hypotheses', [])))
     except Exception as exc:
-        logger.warning("list_hypotheses_tool failed: %s", exc)
+        logger.warning("list_hypotheses failed: %s", exc)
         results['list_hypotheses'] = {"error": str(exc)}
+    
+    # Test evidence tools
+    try:
+        from nighteye.mcp.tools.evidence_tools import get_evidence_summary
+        ev_result = get_evidence_summary(case_id=case.id)
+        results['get_evidence_summary'] = ev_result
+        logger.info("✓ get_evidence_summary: %s", ev_result.get('status', 'ok'))
+    except Exception as exc:
+        logger.warning("get_evidence_summary failed: %s", exc)
+        results['evidence_tools'] = {"error": str(exc)}
     
     return True, results
 
