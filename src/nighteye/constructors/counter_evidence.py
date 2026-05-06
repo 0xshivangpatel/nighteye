@@ -70,9 +70,21 @@ def load_all_whitelists(base_dir: Path) -> int:
 
 def _auto_load_whitelists() -> int:
     """Try to auto-load whitelists from common SRL 2015 paths."""
-    paths = [
-        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015"),
-    ]
+    paths = []
+    
+    # Check for SRL 2015 data in common locations (configurable via env var)
+    import os
+    srl_path = os.environ.get("SRL2015_DATA_PATH")
+    if srl_path:
+        paths.append(Path(srl_path))
+    
+    # Default common paths
+    paths.extend([
+        Path("/cases/SRL 2015"),
+        Path("/data/SRL 2015"),
+        Path("/mnt/evidence/SRL 2015"),
+    ])
+    
     total = 0
     for base in paths:
         if base.exists():
@@ -100,10 +112,27 @@ def _ensure_whitelist_loaded() -> int:
 def _load_redline_md5_map() -> None:
     """Extract path→MD5 mappings from Redline .mans ProcessSections table."""
     import sqlite3 as _sql
-    candidates = [
-        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015/win7-32-nromanoff-10.3.58.5_nighteye/win7-32-nromanoff-c-drive/precooked/redline/nromanoff.mans"),
-        Path("/media/sansforensics/Aeon_s HDD/Hackathon/SRL 2015/xp-tdungan-10.3.58.7_nighteye/xp-tdungan-c-drive/precooked/redline/xp_tdungan.mans"),
-    ]
+    import os
+    
+    # Build candidate paths from environment variable or common locations
+    candidates = []
+    srl_base = os.environ.get("SRL2015_DATA_PATH")
+    
+    if srl_base:
+        base = Path(srl_base)
+        candidates.extend([
+            base / "win7-32-nromanoff-10.3.58.5_nighteye/win7-32-nromanoff-c-drive/precooked/redline/nromanoff.mans",
+            base / "xp-tdungan-10.3.58.7_nighteye/xp-tdungan-c-drive/precooked/redline/xp_tdungan.mans",
+        ])
+    
+    # Also check standard locations
+    for base_path in ["/cases/SRL 2015", "/data/SRL 2015", "/mnt/evidence/SRL 2015"]:
+        base = Path(base_path)
+        candidates.extend([
+            base / "win7-32-nromanoff-10.3.58.5_nighteye/win7-32-nromanoff-c-drive/precooked/redline/nromanoff.mans",
+            base / "xp-tdungan-10.3.58.7_nighteye/xp-tdungan-c-drive/precooked/redline/xp_tdungan.mans",
+        ])
+    
     total = 0
     for mans_path in candidates:
         if not mans_path.exists():

@@ -86,3 +86,7 @@ extractions/
 *.pem
 *.key
 *.crt
+
+# Claude/local dev settings
+.claude/settings.local.json
+*.local.json
