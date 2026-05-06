@@ -72,6 +72,7 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".ex01": EvidenceType.E01_IMAGE,
     ".e02": EvidenceType.E01_IMAGE,
     ".evtx": EvidenceType.EVTX_FILE,
+    ".evt": EvidenceType.EVTX_FILE,  # Windows XP event logs (same binary format)
     ".mem": EvidenceType.MEMORY_DUMP,
     ".dmp": EvidenceType.MEMORY_DUMP,
     ".vmem": EvidenceType.MEMORY_DUMP,
@@ -173,6 +174,7 @@ _PATH_SUBSTRING_HINTS: list[tuple[str, EvidenceType]] = [
 # Directory-level detection: if dir contains X type of files, treat as Y
 _DIR_CONTENT_HINTS: list[tuple[str, EvidenceType]] = [
     (".evtx", EvidenceType.EVTX_FOLDER),
+    (".evt", EvidenceType.EVTX_FOLDER),  # Windows XP event logs
     (".pf", EvidenceType.PREFETCH),
     ("$mft", EvidenceType.MFT),
     ("sam", EvidenceType.REGISTRY_HIVE),
@@ -456,15 +458,26 @@ def scan_evidence_directory(root: Path) -> list[DetectedEvidence]:
 
     results: list[DetectedEvidence] = []
 
-    # First check if root itself is an EVTX folder
+    # First check if root itself is an EVTX/EVT folder (Vista+ or XP)
     evtx_files_in_root = list(root.rglob("*.evtx"))
-    if evtx_files_in_root:
+    evt_files_in_root = list(root.rglob("*.evt"))
+    total_event_files = evtx_files_in_root + evt_files_in_root
+    
+    if total_event_files:
         # Don't descend into individual files — treat as folder
+        evtx_count = len(evtx_files_in_root)
+        evt_count = len(evt_files_in_root)
+        note_parts = []
+        if evtx_count:
+            note_parts.append(f"{evtx_count} EVTX files")
+        if evt_count:
+            note_parts.append(f"{evt_count} EVT (XP) files")
+        
         results.append(DetectedEvidence(
             path=root,
             evidence_type=EvidenceType.EVTX_FOLDER,
-            size_bytes=sum(f.stat().st_size for f in evtx_files_in_root),
-            note=f"Contains {len(evtx_files_in_root)} EVTX files",
+            size_bytes=sum(f.stat().st_size for f in total_event_files),
+            note=f"Contains {', '.join(note_parts)}",
         ))
     else:
         # Scan individual files

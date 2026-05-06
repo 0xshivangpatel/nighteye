@@ -392,6 +392,62 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_srl2015_complete(args: argparse.Namespace) -> int:
+    """Run complete SRL 2015 ingestion with all artifact fixes.
+    
+    This command maximizes evidence extraction from all SRL 2015 hosts:
+    - nromanoff: Complete data via precooked
+    - nfury: Precooked + prefetch/amcache extraction
+    - tdungan: Precooked + XP .evt file parsing
+    - controller: Precooked only (E01 corrupt)
+    """
+    from nighteye.ingest.srl2015_complete import run_complete_srl2015_ingest
+    
+    base_path = Path(args.directory) if args.directory else None
+    
+    print("=" * 60)
+    print("SRL 2015 COMPLETE INGEST")
+    print("=" * 60)
+    print(f"Case ID: {args.case_id}")
+    if base_path:
+        print(f"Data path: {base_path}")
+    print()
+    
+    stats = run_complete_srl2015_ingest(base_path, args.case_id)
+    
+    print("\n" + "=" * 60)
+    print("INGESTION COMPLETE")
+    print("=" * 60)
+    print(f"\nResults by host:")
+    for host, host_stats in stats.items():
+        if host == "error":
+            continue
+        print(f"\n  {host.upper()}:")
+        if "precooked" in host_stats:
+            pc = host_stats["precooked"]
+            if isinstance(pc, dict):
+                if "hosts_processed" in pc:
+                    print(f"    Precooked hosts: {pc.get('hosts_processed', [])}")
+                if "plaso_indexed" in pc:
+                    print(f"    Plaso events: {pc.get('plaso_indexed', 0):,}")
+                if "shimcache_indexed" in pc:
+                    print(f"    Shimcache entries: {pc.get('shimcache_indexed', 0):,}")
+        if "xp_evt" in host_stats:
+            xe = host_stats["xp_evt"]
+            print(f"    XP EVT files: {xe.get('evt_files', 0)}")
+            print(f"    XP EVT events: {xe.get('events_indexed', 0):,}")
+        if "prefetch" in host_stats:
+            pf = host_stats["prefetch"]
+            print(f"    Prefetch files: {pf.get('prefetch_count', 0):,}")
+        if "amcache" in host_stats:
+            am = host_stats["amcache"]
+            print(f"    Amcache entries: {am.get('amcache_entries', 0):,}")
+        if "note" in host_stats:
+            print(f"    Note: {host_stats['note']}")
+    
+    return 0
+
+
 def cmd_full_pipeline(args: argparse.Namespace) -> int:
     """Run full pipeline: ingest → normalize → graph → cluster."""
     import time as _time
@@ -573,6 +629,23 @@ def main(argv: list[str] | None = None) -> int:
     entities_parser.add_argument("--type", "-t", help="Filter by entity type")
     entities_parser.add_argument("--limit", "-l", type=int, default=50)
     entities_parser.set_defaults(func=cmd_entities)
+
+    # srl2015-complete
+    srl2015_parser = subparsers.add_parser(
+        "srl2015-complete",
+        help="Complete SRL 2015 ingest with all artifact fixes"
+    )
+    srl2015_parser.add_argument(
+        "directory",
+        nargs="?",
+        help="SRL 2015 dataset directory (or set SRL2015_DATA_PATH env var)"
+    )
+    srl2015_parser.add_argument(
+        "--case-id",
+        default="srl2015-complete",
+        help="Case ID for indexing (default: srl2015-complete)"
+    )
+    srl2015_parser.set_defaults(func=cmd_srl2015_complete)
 
     # full-pipeline
     pipeline_parser = subparsers.add_parser("full-pipeline", help="Run complete pipeline")
