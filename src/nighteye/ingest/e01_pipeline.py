@@ -80,28 +80,77 @@ _ARTIFACT_PATTERNS = {
 # ---------------------------------------------------------------------------
 
 def _mount_e01(e01_path: Path) -> Path | None:
-    """Mount an E01 image via ewfmount, return raw image path."""
+    """Mount an E01 image via ewfmount, return raw image path.
+    
+    Handles corrupted files gracefully by checking file integrity first
+    and providing detailed error messages.
+    """
+    # Pre-flight checks
+    if not e01_path.exists():
+        logger.error("E01 file does not exist: %s", e01_path)
+        return None
+    
+    file_size = e01_path.stat().st_size
+    if file_size == 0:
+        logger.error("E01 file is empty (0 bytes): %s", e01_path)
+        return None
+    
+    # Check if file is readable (corruption check - try to read first 4KB)
+    try:
+        with open(e01_path, 'rb') as f:
+            header = f.read(4096)
+            if len(header) < 4096 and file_size > 4096:
+                logger.warning("E01 file may be truncated: %s (%d bytes)", e01_path.name, file_size)
+            # Check for EWF magic number (EVF or LVf)
+            if not (header.startswith(b'EVF') or header.startswith(b'LVf')):
+                logger.warning("E01 file has invalid header (may be corrupted): %s", e01_path.name)
+    except IOError as exc:
+        logger.error("Cannot read E01 file (corrupted or permission denied): %s - %s", e01_path.name, exc)
+        return None
+    
     mount_dir = Path(tempfile.mkdtemp(prefix="ewf-"))
     logger.info("Mounting %s → %s", e01_path.name, mount_dir)
 
-    proc = subprocess.Popen(
-        [_EWFMOUNT, str(e01_path), str(mount_dir)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    time.sleep(3)
+    try:
+        proc = subprocess.Popen(
+            [_EWFMOUNT, str(e01_path), str(mount_dir)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(3)
+        
+        # Check if process is still running
+        if proc.poll() is not None:
+            # Process exited early - likely an error
+            _, stderr = proc.communicate()
+            error_msg = stderr.decode('utf-8', errors='ignore')[:500] if stderr else "Unknown error"
+            logger.error("ewfmount failed to mount %s: %s", e01_path.name, error_msg)
+            shutil.rmtree(mount_dir, ignore_errors=True)
+            return None
 
-    raw_files = list(mount_dir.glob("*"))
-    if not raw_files:
-        logger.error("ewfmount produced no raw image in %s", mount_dir)
-        proc.kill()
+        raw_files = list(mount_dir.glob("*"))
+        if not raw_files:
+            logger.error("ewfmount produced no raw image in %s (file may be corrupted)", mount_dir)
+            proc.kill()
+            proc.wait()
+            shutil.rmtree(mount_dir, ignore_errors=True)
+            return None
+
+        raw_path = raw_files[0]
+        raw_size = raw_path.stat().st_size
+        
+        if raw_size == 0:
+            logger.error("Mounted raw image is empty: %s (E01 may be corrupted)", e01_path.name)
+            _unmount_e01(mount_dir)
+            return None
+            
+        logger.info("Raw image: %s (%.1f GB)", raw_path.name, raw_size / (1024**3))
+        return raw_path
+        
+    except Exception as exc:
+        logger.error("Exception during E01 mount: %s", exc)
         shutil.rmtree(mount_dir, ignore_errors=True)
         return None
-
-    raw_path = raw_files[0]
-    logger.info("Raw image: %s (%.1f GB)", raw_path.name,
-                 raw_path.stat().st_size / (1024**3))
-    return raw_path
 
 
 def _unmount_e01(mount_dir: Path) -> None:
