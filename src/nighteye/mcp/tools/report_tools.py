@@ -12,6 +12,7 @@ from typing import Any
 
 from nighteye.db import connect
 from nighteye.case import get_active_case
+from nighteye.mcp.tools._resolve import resolve_case_db, load_case_info
 
 __all__ = [
     "generate_report",
@@ -48,34 +49,22 @@ def generate_report(
     Returns:
         Report data or file path
     """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
-    if not db_path:
-        db_path = "graph.db"
+    case_info = load_case_info(case_id, db_path)
+    if not case_info:
+        return {"success": False, "error": f"Case metadata not found for {case_id}"}
 
     try:
         with connect(db_path, read_only=True) as conn:
-            # Get case info
-            case_row = conn.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-
-            if not case_row:
-                return {"success": False, "error": "Case not found"}
-
-            case_info = dict(case_row)
-
-            # Get approved hypotheses
+            # Get hypotheses (approved + rejected + contradicted)
             hypotheses = []
             if include_hypotheses:
                 rows = conn.execute(
                     """
-                    SELECT * FROM hypotheses 
+                    SELECT * FROM hypotheses
                     WHERE case_id = ? AND status IN ('APPROVED', 'REJECTED', 'CONTRADICTED')
                     ORDER BY staged_at DESC
                     """,
@@ -84,7 +73,7 @@ def generate_report(
                 for row in rows:
                     h = dict(row)
                     # Parse JSON fields
-                    for field in ["technique_ids", "evidence_refs", "audit_ids", 
+                    for field in ["technique_ids", "evidence_refs", "audit_ids",
                                   "confidence_breakdown", "causal_links"]:
                         if h.get(field):
                             try:
@@ -93,19 +82,33 @@ def generate_report(
                                 pass
                     hypotheses.append(h)
 
-            # Get clusters
+            # Get clusters — use the actual schema column names
             clusters = []
             if include_clusters:
                 rows = conn.execute(
                     """
-                    SELECT cluster_id, constructor_name, host, score, strength, 
-                           status, trigger_name, summary, created_at
+                    SELECT cluster_id,
+                           cluster_type AS constructor_name,
+                           primary_host AS host,
+                           score, strength,
+                           triggers_fired,
+                           summary, created_at
                     FROM clusters WHERE case_id = ?
                     ORDER BY score DESC
                     """,
                     (case_id,),
                 ).fetchall()
-                clusters = [dict(row) for row in rows]
+                for row in rows:
+                    c = dict(row)
+                    if c.get("triggers_fired"):
+                        try:
+                            triggers = json.loads(c["triggers_fired"])
+                            c["trigger_name"] = triggers[0] if triggers else ""
+                        except (json.JSONDecodeError, TypeError):
+                            c["trigger_name"] = ""
+                    else:
+                        c["trigger_name"] = ""
+                    clusters.append(c)
 
             # Get evidence gaps
             gaps = []
@@ -155,7 +158,7 @@ def generate_report(
             report = {
                 "case": {
                     "id": case_info.get("case_id"),
-                    "name": case_info.get("case_name"),
+                    "name": case_info.get("name") or case_info.get("case_name"),
                     "examiner": case_info.get("examiner"),
                     "created_at": case_info.get("created_at"),
                     "status": case_info.get("status"),
@@ -207,15 +210,9 @@ def get_report_status(
     Returns:
         Status metrics
     """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
-
-    if not db_path:
-        db_path = "graph.db"
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         with connect(db_path, read_only=True) as conn:

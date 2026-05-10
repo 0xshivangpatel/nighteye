@@ -59,65 +59,130 @@ def search_evidence(
     if not client:
         client = NightEyeOSClient()
 
-    # Build OpenSearch query
-    must_clauses: list[dict] = [{"term": {"nighteye.case_id": case_id}}]
+    # NightEye stores two doc shapes:
+    #   - canonical-{host}: flat fields (case_id, host_name, canonical_type, command_line)
+    #   - raw indices (win_timeline, evtx, mft, registry, redline_mans):
+    #     ECS-nested (host.name, process.command_line, etc.) with nighteye.case_id
+    # The query below uses `bool/should` to match either shape so a single
+    # search hits both.
 
+    must_clauses: list[dict] = []
+
+    # case_id filter — try both flat and nighteye-prefixed forms
+    must_clauses.append({
+        "bool": {
+            "should": [
+                {"term": {"case_id.keyword": case_id}},
+                {"term": {"case_id": case_id}},
+                {"term": {"nighteye.case_id.keyword": case_id}},
+                {"term": {"nighteye.case_id": case_id}},
+            ],
+            "minimum_should_match": 1,
+        }
+    })
+
+    # canonical_type filter accepts user-friendly aliases (e.g.
+    # "process_execution") and the canonical enum form (PROCESS_EXECUTION)
     if evidence_type:
-        must_clauses.append({"term": {"nighteye.canonical_type": evidence_type}})
-    if host:
-        must_clauses.append({"term": {"host.name": host}})
-    if start_time or end_time:
-        range_query: dict[str, Any] = {"range": {"@timestamp": {}}}
-        if start_time:
-            range_query["range"]["@timestamp"]["gte"] = start_time
-        if end_time:
-            range_query["range"]["@timestamp"]["lte"] = end_time
-        must_clauses.append(range_query)
-
-    # Parse query string
-    if ":" in query:
-        # Field:value search
-        field, value = query.split(":", 1)
-        must_clauses.append({"match": {field.strip(): value.strip()}})
-    else:
-        # Full text search
+        et_upper = evidence_type.upper()
         must_clauses.append({
-            "multi_match": {
-                "query": query,
-                "fields": [
-                    "process.command_line^3",
-                    "file.path^2",
-                    "registry.key^2",
-                    "user.name^2",
-                    "host.name",
-                    "event.action",
-                    "message",
+            "bool": {
+                "should": [
+                    {"term": {"canonical_type.keyword": et_upper}},
+                    {"term": {"canonical_type": et_upper}},
+                    {"term": {"nighteye.canonical_type.keyword": et_upper}},
                 ],
+                "minimum_should_match": 1,
             }
         })
 
-    dsl = {"bool": {"must": must_clauses}}
+    if host:
+        must_clauses.append({
+            "bool": {
+                "should": [
+                    {"term": {"host_name.keyword": host}},
+                    {"term": {"host_name": host}},
+                    {"term": {"host.name.keyword": host}},
+                    {"term": {"host.name": host}},
+                ],
+                "minimum_should_match": 1,
+            }
+        })
 
-    # Search across all indices for this case (case-insensitive helper —
-    # the wildcard must match OpenSearch's lowercased index names).
+    if start_time or end_time:
+        ts_range: dict[str, str] = {}
+        if start_time:
+            ts_range["gte"] = start_time
+        if end_time:
+            ts_range["lte"] = end_time
+        must_clauses.append({"range": {"@timestamp": ts_range}})
+
+    # Parse query string
+    if query and query.strip() and query.strip() != "*":
+        if ":" in query and not query.startswith(("http", "https")):
+            # Field:value search — exact match on the named field
+            field, value = query.split(":", 1)
+            must_clauses.append({"match": {field.strip(): value.strip()}})
+        else:
+            # Free text — use BOTH match (for tokenized words) AND wildcard
+            # against `.keyword` subfields (so "lsass" finds the substring
+            # in path strings like "C:\\Windows\\system32\\lsass.exe" that
+            # the standard analyzer tokenizes as one big token).
+            qval = query.strip()
+            wildcard_val = f"*{qval.lower()}*"
+            text_fields = [
+                "command_line", "process.command_line",
+                "target_file", "file.path",
+                "registry_key", "registry.key",
+                "user", "user.name",
+                "host_name", "host.name",
+                "alert_name", "rule.name",
+                "process_name", "process.name",
+                "event.action", "message",
+            ]
+            keyword_fields = [
+                "command_line.keyword", "process.command_line.keyword",
+                "target_file.keyword", "file.path.keyword",
+                "registry_key.keyword", "registry.key.keyword",
+                "process_name.keyword", "process.name.keyword",
+                "alert_name.keyword", "rule.name.keyword",
+            ]
+            should: list[dict[str, Any]] = [
+                {"multi_match": {
+                    "query": qval,
+                    "fields": [f + "^2" for f in text_fields],
+                    "type": "best_fields",
+                }},
+            ]
+            for kf in keyword_fields:
+                should.append({"wildcard": {kf: {"value": wildcard_val, "case_insensitive": True}}})
+            must_clauses.append({"bool": {"should": should, "minimum_should_match": 1}})
+
+    dsl = {"bool": {"must": must_clauses}} if must_clauses else {"match_all": {}}
+
+    # Search across all indices for this case
     indices = client.list_indices(case_index_pattern(case_id))
     if not indices:
-        return {"results": [], "total": 0, "indices_searched": 0}
+        return {"results": [], "total": 0, "indices_searched": 0, "query": query}
 
-    all_results = []
+    all_results: list[dict[str, Any]] = []
     for index in indices:
+        if len(all_results) >= limit:
+            break
         try:
-            page = client.scroll_search(
-                index=index,
-                query=dsl,
-                page_size=min(limit, 100),
-            )
-            for doc in page:
+            hits = client.search(index=index, query=dsl, size=min(limit, 100))
+            for doc in hits:
                 all_results.append({
-                    "id": doc.get("_id"),
+                    "id": doc.get("event_id") or doc.get("_id"),
                     "index": index,
-                    "type": doc.get("nighteye", {}).get("canonical_type", "unknown"),
-                    "host": doc.get("host", {}).get("name", ""),
+                    "type": (
+                        doc.get("canonical_type")
+                        or doc.get("nighteye", {}).get("canonical_type", "unknown")
+                    ),
+                    "host": (
+                        doc.get("host_name")
+                        or doc.get("host", {}).get("name", "")
+                    ),
                     "timestamp": doc.get("@timestamp"),
                     "summary": _summarize_doc(doc),
                     "raw": doc,
@@ -261,7 +326,7 @@ def get_process_tree(
     # Query process execution events
     results = search_evidence(
         case_id=case_id,
-        query="canonical_type:process_execution",
+        query="canonical_type:PROCESS_EXECUTION",
         host=host,
         start_time=start_time,
         end_time=end_time,
@@ -360,7 +425,7 @@ def get_network_connections(
     if not client:
         client = NightEyeOSClient()
 
-    query_parts = ["canonical_type:network_connection"]
+    query_parts = ["canonical_type:NETWORK_CONNECTION"]
     if remote_ip:
         query_parts.append(f"destination.ip:{remote_ip}")
 
@@ -379,13 +444,13 @@ def get_network_connections(
         raw = r.get("raw", {})
         connections.append({
             "timestamp": raw.get("@timestamp"),
-            "source_ip": raw.get("source", {}).get("ip", ""),
-            "source_port": raw.get("source", {}).get("port", ""),
-            "dest_ip": raw.get("destination", {}).get("ip", ""),
-            "dest_port": raw.get("destination", {}).get("port", ""),
-            "process": raw.get("process", {}).get("name", ""),
-            "user": raw.get("user", {}).get("name", ""),
-            "action": raw.get("event", {}).get("action", ""),
+            "source_ip": (raw.get("source") or {}).get("ip", ""),
+            "source_port": (raw.get("source") or {}).get("port", ""),
+            "dest_ip": raw.get("remote_ip") or (raw.get("destination") or {}).get("ip", ""),
+            "dest_port": raw.get("remote_port") or (raw.get("destination") or {}).get("port", ""),
+            "process": raw.get("process_name") or (raw.get("process") or {}).get("name", ""),
+            "user": raw.get("user") if isinstance(raw.get("user"), str) else (raw.get("user") or {}).get("name", ""),
+            "action": (raw.get("event") or {}).get("action", ""),
         })
 
     return {
@@ -407,7 +472,7 @@ def get_registry_changes(
     if not client:
         client = NightEyeOSClient()
 
-    query = "canonical_type:registry_modification"
+    query = "canonical_type:REGISTRY_MODIFICATION"
     if registry_key:
         query += f" registry.key:{registry_key}"
 
@@ -426,11 +491,11 @@ def get_registry_changes(
         raw = r.get("raw", {})
         changes.append({
             "timestamp": raw.get("@timestamp"),
-            "key": raw.get("registry", {}).get("key", ""),
-            "value": raw.get("registry", {}).get("value", ""),
-            "action": raw.get("event", {}).get("action", ""),
-            "process": raw.get("process", {}).get("name", ""),
-            "user": raw.get("user", {}).get("name", ""),
+            "key": raw.get("registry_key") or (raw.get("registry") or {}).get("key", ""),
+            "value": (raw.get("registry") or {}).get("value", ""),
+            "action": (raw.get("event") or {}).get("action", ""),
+            "process": raw.get("process_name") or (raw.get("process") or {}).get("name", ""),
+            "user": raw.get("user") if isinstance(raw.get("user"), str) else (raw.get("user") or {}).get("name", ""),
         })
 
     return {
@@ -453,7 +518,7 @@ def get_service_changes(
 
     results = search_evidence(
         case_id=case_id,
-        query="canonical_type:service_installation",
+        query="canonical_type:SERVICE_INSTALLATION",
         host=host,
         start_time=start_time,
         end_time=end_time,
@@ -466,10 +531,10 @@ def get_service_changes(
         raw = r.get("raw", {})
         services.append({
             "timestamp": raw.get("@timestamp"),
-            "service_name": raw.get("service", {}).get("name", ""),
-            "action": raw.get("event", {}).get("action", ""),
-            "process": raw.get("process", {}).get("name", ""),
-            "user": raw.get("user", {}).get("name", ""),
+            "service_name": (raw.get("service") or {}).get("name", "") or raw.get("alert_name", ""),
+            "action": (raw.get("event") or {}).get("action", ""),
+            "process": raw.get("process_name") or (raw.get("process") or {}).get("name", ""),
+            "user": raw.get("user") if isinstance(raw.get("user"), str) else (raw.get("user") or {}).get("name", ""),
         })
 
     return {
@@ -490,9 +555,9 @@ def get_authentication_events(
     if not client:
         client = NightEyeOSClient()
 
-    query = "canonical_type:authentication"
+    query = "canonical_type:AUTHENTICATION"
     if user:
-        query += f" user.name:{user}"
+        query = f"user:{user}"
 
     results = search_evidence(
         case_id=case_id,
@@ -509,11 +574,11 @@ def get_authentication_events(
         raw = r.get("raw", {})
         events.append({
             "timestamp": raw.get("@timestamp"),
-            "action": raw.get("event", {}).get("action", ""),
-            "user": raw.get("user", {}).get("name", ""),
-            "source_ip": raw.get("source", {}).get("ip", ""),
-            "logon_type": raw.get("winlog", {}).get("event_data", {}).get("LogonType", ""),
-            "result": "success" if "success" in str(raw.get("event", {}).get("outcome", "")).lower() else "failure",
+            "action": (raw.get("event") or {}).get("action", ""),
+            "user": raw.get("user") if isinstance(raw.get("user"), str) else (raw.get("user") or {}).get("name", ""),
+            "source_ip": (raw.get("source") or {}).get("ip", "") or raw.get("winlog.event_data.IpAddress", ""),
+            "logon_type": (raw.get("winlog") or {}).get("event_data", {}).get("LogonType", "") or raw.get("winlog.event_data.LogonType", ""),
+            "result": "success" if "success" in str((raw.get("event") or {}).get("outcome", "")).lower() else "failure",
         })
 
     return {
@@ -529,43 +594,63 @@ def get_authentication_events(
 # ============================================================
 
 def _summarize_doc(doc: dict[str, Any]) -> str:
-    """Generate a human-readable summary of an evidence document."""
-    parts = []
+    """Generate a human-readable summary of an evidence document.
 
-    # Event action
-    action = doc.get("event", {}).get("action", "")
-    if action:
+    Handles both canonical (flat fields) and ECS-nested raw documents.
+    """
+    parts: list[str] = []
+
+    # Event action — only present on raw ECS docs
+    action = (doc.get("event") or {}).get("action", "")
+    if action and action not in ("artifact",):
         parts.append(action)
 
-    # Process info
-    proc = doc.get("process", {})
-    if proc.get("name"):
-        parts.append(f"Process: {proc['name']}")
-    if proc.get("command_line"):
-        cmd = proc["command_line"]
+    # Canonical type marker — present on canonical docs
+    ctype = doc.get("canonical_type")
+    if ctype:
+        parts.append(ctype)
+
+    # Process — flat first, then ECS-nested
+    proc_name = doc.get("process_name") or (doc.get("process") or {}).get("name", "")
+    if proc_name:
+        parts.append(f"Process: {proc_name}")
+
+    cmd = doc.get("command_line") or (doc.get("process") or {}).get("command_line", "")
+    if cmd:
         if len(cmd) > 100:
-            cmd = cmd[:100] + "..."
+            cmd = cmd[:100] + "…"
         parts.append(f"Cmd: {cmd}")
 
-    # File info
-    file = doc.get("file", {})
-    if file.get("path"):
-        parts.append(f"File: {file['path']}")
+    # File
+    file_path = doc.get("target_file") or (doc.get("file") or {}).get("path", "")
+    if file_path:
+        if len(file_path) > 80:
+            file_path = "…" + file_path[-77:]
+        parts.append(f"File: {file_path}")
 
-    # Network info
-    src = doc.get("source", {})
-    dst = doc.get("destination", {})
+    # Network
+    dst = doc.get("destination") or {}
     if dst.get("ip"):
         parts.append(f"→ {dst['ip']}:{dst.get('port', '')}")
+    elif doc.get("remote_ip"):
+        parts.append(f"→ {doc['remote_ip']}")
 
     # User
-    user = doc.get("user", {}).get("name", "")
-    if user:
+    user = doc.get("user") if isinstance(doc.get("user"), str) else None
+    if user is None:
+        user = (doc.get("user") or {}).get("name", "") if isinstance(doc.get("user"), dict) else ""
+    if user and user != "-":
         parts.append(f"User: {user}")
 
-    # Alert info
-    rule = doc.get("rule", {})
-    if rule.get("name"):
-        parts.append(f"Alert: {rule['name']} ({rule.get('level', '')})")
+    # Registry
+    reg_key = doc.get("registry_key") or (doc.get("registry") or {}).get("key", "")
+    if reg_key:
+        parts.append(f"Reg: {reg_key}")
 
-    return " | ".join(parts) if parts else "Unknown event"
+    # Alert
+    alert_name = doc.get("alert_name") or (doc.get("rule") or {}).get("name", "")
+    if alert_name:
+        level = doc.get("alert_level") or (doc.get("rule") or {}).get("level", "")
+        parts.append(f"Alert: {alert_name}" + (f" ({level})" if level else ""))
+
+    return " | ".join(parts) if parts else "Event"

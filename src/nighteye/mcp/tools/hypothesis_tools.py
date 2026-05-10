@@ -29,6 +29,7 @@ from nighteye.hypothesis_lifecycle import (
     list_hypotheses as _list_hypotheses,
 )
 from nighteye.case import get_active_case
+from nighteye.mcp.tools._resolve import resolve_case_db, load_case_info
 
 __all__ = [
     "record_hypothesis",
@@ -76,29 +77,13 @@ def record_hypothesis(
     Returns:
         Hypothesis result with status and confidence
     """
-    if not db_path:
-        active = get_active_case()
-        if active and (not case_id or active.id == case_id):
-            case_id = case_id or active.id
-            examiner = examiner or active.examiner
-            db_path = active.graph_db
-        elif case_id:
-            from nighteye.case import get_case
-            try:
-                info = get_case(case_id)
-                db_path = info.graph_db
-                examiner = examiner or info.examiner
-            except:
-                pass
-
-    if not db_path:
-        return {"success": False, "error": "Database path (db_path) required or active case must be set"}
-
-    if not case_id:
-        return {"success": False, "error": "Case ID (case_id) required"}
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     if not examiner:
-        return {"success": False, "error": "Examiner required"}
+        info = load_case_info(case_id, db_path)
+        examiner = info.get("examiner") or "unknown"
 
     # Convert evidence_refs to EvidenceRef objects
     refs = [
@@ -266,21 +251,9 @@ def list_hypotheses(
     Returns:
         List of hypotheses
     """
-    if not db_path:
-        active = get_active_case()
-        if active and (not case_id or active.id == case_id):
-            case_id = case_id or active.id
-            db_path = active.graph_db
-        elif case_id:
-            from nighteye.case import get_case
-            try:
-                info = get_case(case_id)
-                db_path = info.graph_db
-            except:
-                pass
-
-    if not db_path:
-        db_path = "graph.db"
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         status_enum = None
@@ -437,13 +410,13 @@ def mark_insufficient_evidence(
     Returns:
         Result with gap registration
     """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        examiner = examiner or active.examiner
-        db_path = db_path or active.graph_db
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
+
+    if not examiner:
+        info = load_case_info(case_id, db_path)
+        examiner = info.get("examiner") or "unknown"
 
     refs = [
         EvidenceRef(

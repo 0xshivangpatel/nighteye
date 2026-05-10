@@ -148,8 +148,8 @@ def get_cluster_timeline(
 ) -> dict[str, Any]:
     """Get chronological timeline of events within a cluster.
 
-    Returns:
-        Timeline events sorted by timestamp
+    Returns the time-bracket bounds plus any member canonical event IDs
+    so the caller can pivot to ``get_evidence_details`` / ``search_evidence``.
     """
     if not db_path:
         from nighteye.case import get_active_case
@@ -158,50 +158,31 @@ def get_cluster_timeline(
 
     with connect(db_path, read_only=True) as conn:
         row = conn.execute(
-            "SELECT member_canonical_ids, time_start, time_end FROM clusters WHERE cluster_id = ?",
+            "SELECT member_canonical_ids, time_start, time_end, primary_host "
+            "FROM clusters WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
 
         if not row:
             return {"found": False, "cluster_id": cluster_id}
 
-        events = []
-
-        # Add trigger event
-        trigger = row["trigger_event"]
-        if trigger:
-            try:
-                trigger_data = json.loads(trigger)
-                events.append({
-                    "timestamp": row["trigger_event_timestamp"],
-                    "type": "trigger",
-                    "event": trigger_data,
-                })
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Add member events
-        members = row["member_events"]
-        if members:
-            try:
-                member_list = json.loads(members)
-                for m in member_list:
-                    events.append({
-                        "timestamp": m.get("timestamp", ""),
-                        "type": "member",
-                        "event": m,
-                    })
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Sort by timestamp
-        events.sort(key=lambda x: x["timestamp"] or "")
+        try:
+            member_ids = json.loads(row["member_canonical_ids"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            member_ids = []
 
     return {
         "found": True,
         "cluster_id": cluster_id,
-        "event_count": len(events),
-        "timeline": events,
+        "host": row["primary_host"],
+        "time_start": row["time_start"],
+        "time_end": row["time_end"],
+        "event_count": len(member_ids),
+        "member_canonical_ids": member_ids,
+        "hint": (
+            "Pivot to tool_search_evidence with start_time=time_start and "
+            "end_time=time_end on this host to see surrounding context."
+        ),
     }
 
 
@@ -210,10 +191,11 @@ def get_cluster_artifacts(
     db_path: str | None = None,
     client: Any | None = None,
 ) -> dict[str, Any]:
-    """Get all artifacts (raw evidence) associated with a cluster.
+    """Fetch the underlying canonical-event documents that built this cluster.
 
-    Returns:
-        List of evidence documents referenced by the cluster
+    Looks up ``member_canonical_ids`` and resolves each one against the
+    case's canonical-* indices via OpenSearch. Falls back to a wildcard
+    search when the host index isn't known up-front.
     """
     if not db_path:
         from nighteye.case import get_active_case
@@ -222,59 +204,77 @@ def get_cluster_artifacts(
 
     with connect(db_path, read_only=True) as conn:
         row = conn.execute(
-            "SELECT member_canonical_ids FROM clusters WHERE cluster_id = ?",
+            "SELECT case_id, member_canonical_ids, primary_host "
+            "FROM clusters WHERE cluster_id = ?",
             (cluster_id,),
         ).fetchone()
 
         if not row:
             return {"found": False, "cluster_id": cluster_id}
 
-        # Collect all event IDs
-        event_ids = set()
+        try:
+            event_ids = json.loads(row["member_canonical_ids"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            event_ids = []
 
-        trigger = row["trigger_event"]
-        if trigger:
-            try:
-                trigger_data = json.loads(trigger)
-                if trigger_data.get("event_id"):
-                    event_ids.add(trigger_data["event_id"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        case_id = row["case_id"]
+        host = row["primary_host"]
 
-        members = row["member_events"]
-        if members:
-            try:
-                member_list = json.loads(members)
-                for m in member_list:
-                    if m.get("event_id"):
-                        event_ids.add(m["event_id"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+    if client is None:
+        client = NightEyeOSClient()
 
-    # Fetch evidence documents from OpenSearch
-    artifacts = []
-    if client and event_ids:
-        for event_id in event_ids:
+    # Prefer the host-specific canonical index; fall back to all canonical
+    # indices for this case if the per-host one is missing.
+    from nighteye.ingest.ecs import case_index_pattern, make_index_name
+
+    candidate_indices: list[str] = []
+    if host and host != "unknown":
+        candidate_indices.append(make_index_name(case_id, "canonical", host))
+    candidate_indices.append(case_index_pattern(case_id, "canonical-*"))
+
+    artifacts: list[dict[str, Any]] = []
+    for event_id in event_ids:
+        # Try by `event_id` field first (canonical schema), then by `_id`.
+        doc = None
+        for idx in candidate_indices:
             try:
-                # Search across all indices for this event
-                result = client.scroll_search(
-                    index="*",
-                    query={"term": {"_id": event_id}},
-                    page_size=1,
+                hits = client.search(
+                    index=idx,
+                    query={
+                        "bool": {
+                            "should": [
+                                {"term": {"event_id.keyword": event_id}},
+                                {"term": {"event_id": event_id}},
+                                {"term": {"_id": event_id}},
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    },
+                    size=1,
                 )
-                for doc in result:
+                if hits:
+                    doc = hits[0]
                     artifacts.append({
                         "id": event_id,
-                        "index": doc.get("_index", ""),
+                        "index": idx,
                         "document": doc,
                     })
+                    break
             except Exception as exc:
-                logger.debug("Failed to fetch artifact %s: %s", event_id, exc)
+                logger.debug("Failed to fetch artifact %s from %s: %s", event_id, idx, exc)
+        if doc is None:
+            artifacts.append({
+                "id": event_id,
+                "index": None,
+                "document": None,
+                "error": "not found in any canonical index",
+            })
 
     return {
         "found": True,
         "cluster_id": cluster_id,
         "artifact_count": len(artifacts),
+        "found_count": sum(1 for a in artifacts if a.get("document")),
         "artifacts": artifacts,
     }
 

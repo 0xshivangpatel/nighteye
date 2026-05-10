@@ -495,6 +495,15 @@ def mark_insufficient(
     )
     db_conn.commit()
 
+    # Compute content hash so the NOT NULL DB constraint is satisfied.
+    content = json.dumps({
+        "title": title,
+        "observation": observation,
+        "interpretation": interpretation,
+        "technique_ids": technique_ids,
+    }, sort_keys=True)
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:32]
+
     hypothesis = Hypothesis(
         id=hypothesis_id,
         case_id=case_id,
@@ -507,12 +516,14 @@ def mark_insufficient(
         staged_at=now,
         modified_at=now,
         evidence_refs=evidence_refs,
+        audit_ids=[ref.audit_id for ref in evidence_refs if ref.audit_id],
         confidence=ConfidenceBreakdown(
             score=0,
             tier=ConfidenceTier.SPECULATIVE,
             rationale=f"Insufficient evidence: {reason}",
         ),
         provenance_tier=ProvenanceTier.NONE,
+        content_hash=content_hash,
     )
 
     _persist_hypothesis(db_conn, hypothesis)

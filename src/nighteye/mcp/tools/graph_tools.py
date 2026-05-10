@@ -232,16 +232,25 @@ def search_entities(
         sql += " ORDER BY last_seen DESC LIMIT ?"
         params.append(limit)
 
+        import json as _json
+
         with connect(db_path, read_only=True) as conn:
             rows = conn.execute(sql, params).fetchall()
 
         entities = []
         for row in rows:
+            # sqlite3.Row supports [] but not .get(); properties is a JSON
+            # TEXT column we need to decode for callers.
+            props_raw = row["properties"] if "properties" in row.keys() else None
+            try:
+                props = _json.loads(props_raw) if props_raw else {}
+            except (TypeError, ValueError):
+                props = {}
             entities.append({
                 "entity_id": row["entity_id"],
                 "entity_type": row["entity_type"],
                 "canonical_key": row["canonical_key"],
-                "properties": row.get("properties", {}),
+                "properties": props,
                 "first_seen": row["first_seen"],
                 "last_seen": row["last_seen"],
                 "seen_count": row["seen_count"],

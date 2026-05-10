@@ -284,6 +284,60 @@ class NightEyeOSClient:
         )
         return [hit["_source"] for hit in result["hits"]["hits"]]
 
+    def get_document(self, index: str, doc_id: str) -> dict[str, Any] | None:
+        """Fetch a single document by `_id` or by inner `event_id` field.
+
+        Cluster ``member_canonical_ids`` stores the inner ``event_id``
+        (sha256 truncated to 32 hex), but OpenSearch's ``_id`` is the
+        full sha256 from ``compute_doc_id``. We try `_id` first, then
+        fall back to a `term` query on the ``event_id`` field.
+
+        Accepts either a concrete index name or a wildcard pattern.
+        """
+        self._require_connection()
+        assert self._client is not None
+
+        # Try direct GET first when index is concrete (fastest path)
+        if "*" not in index and "," not in index:
+            try:
+                doc = self._client.get(index=index, id=doc_id)
+                return {
+                    "_id": doc.get("_id"),
+                    "_index": doc.get("_index"),
+                    **doc.get("_source", {}),
+                }
+            except Exception:
+                pass  # fall through to field search
+
+        # Field search — match either _id or the inner event_id
+        try:
+            result = self._client.search(
+                index=index,
+                body={
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"term": {"_id": doc_id}},
+                                {"term": {"event_id.keyword": doc_id}},
+                                {"term": {"event_id": doc_id}},
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    },
+                    "size": 1,
+                },
+            )
+            hits = result.get("hits", {}).get("hits", [])
+            if not hits:
+                return None
+            return {
+                "_id": hits[0].get("_id"),
+                "_index": hits[0].get("_index"),
+                **hits[0].get("_source", {}),
+            }
+        except Exception:
+            return None
+
     def search_raw(
         self,
         index: str,

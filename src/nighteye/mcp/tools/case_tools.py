@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from nighteye.db import connect
-from nighteye.case import get_active_case, CaseInfo
+from nighteye.mcp.tools._resolve import resolve_case_db, load_case_info
 
 __all__ = [
     "get_case_status",
@@ -34,31 +34,19 @@ def get_case_status(
     Returns:
         Case status with counts
     """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
-    if not db_path:
-        db_path = "graph.db"
+    case_info = load_case_info(case_id, db_path)
+    if not case_info:
+        return {"success": False, "error": f"Case metadata not found for {case_id}"}
 
     try:
         with connect(db_path, read_only=True) as conn:
-            # Case info
-            case_row = conn.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-
-            if not case_row:
-                return {"success": False, "error": "Case not found"}
-
-            case = dict(case_row)
-
-            # Counts
             hosts = conn.execute(
-                "SELECT COUNT(DISTINCT host) FROM clusters WHERE case_id = ?", (case_id,)
+                "SELECT COUNT(DISTINCT primary_host) FROM clusters WHERE case_id = ?",
+                (case_id,),
             ).fetchone()[0]
 
             clusters = conn.execute(
@@ -93,11 +81,11 @@ def get_case_status(
             return {
                 "success": True,
                 "case": {
-                    "id": case["case_id"],
-                    "name": case["case_name"],
-                    "examiner": case["examiner"],
-                    "created_at": case["created_at"],
-                    "status": case["status"],
+                    "id": case_info["case_id"],
+                    "name": case_info["name"],
+                    "examiner": case_info["examiner"],
+                    "created_at": case_info["created_at"],
+                    "status": case_info["status"],
                 },
                 "progress": {
                     "hosts": hosts,
@@ -124,34 +112,22 @@ def get_case_summary(
     case_id: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Get executive summary of case findings.
-
-    Returns:
-        High-level summary
-    """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
-
-    if not db_path:
-        db_path = "graph.db"
+    """Get executive summary of case findings."""
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         with connect(db_path, read_only=True) as conn:
-            # Get top clusters
             clusters = conn.execute(
                 """
-                SELECT constructor_name, host, score, summary 
+                SELECT cluster_type, primary_host, score, summary
                 FROM clusters WHERE case_id = ? AND score >= 40
                 ORDER BY score DESC LIMIT 10
                 """,
                 (case_id,),
             ).fetchall()
 
-            # Get approved hypotheses
             hypotheses = conn.execute(
                 """
                 SELECT title, interpretation, technique_ids, confidence_score
@@ -161,7 +137,6 @@ def get_case_summary(
                 (case_id,),
             ).fetchall()
 
-            # Get disturbances
             disturbances = conn.execute(
                 """
                 SELECT host, window_start, window_end, disturbance_type
@@ -171,11 +146,10 @@ def get_case_summary(
                 (case_id,),
             ).fetchall()
 
-            # Determine overall assessment
-            has_ransomware = any("Impact" in c["constructor_name"] for c in clusters)
-            has_lateral = any("Lateral" in c["constructor_name"] for c in clusters)
-            has_persistence = any("Persistence" in c["constructor_name"] for c in clusters)
-            has_c2 = any("Beaconing" in c["constructor_name"] for c in clusters)
+            has_ransomware = any("Impact" in c["cluster_type"] for c in clusters)
+            has_lateral = any("Lateral" in c["cluster_type"] for c in clusters)
+            has_persistence = any("Persistence" in c["cluster_type"] for c in clusters)
+            has_c2 = any("Beaconing" in c["cluster_type"] for c in clusters)
 
             assessment = "No significant threats detected"
             if has_ransomware:
@@ -196,8 +170,8 @@ def get_case_summary(
                 "critical_findings": [
                     {
                         "type": "cluster",
-                        "constructor": c["constructor_name"],
-                        "host": c["host"],
+                        "constructor": c["cluster_type"],
+                        "host": c["primary_host"],
                         "score": c["score"],
                         "summary": c["summary"],
                     }
@@ -207,7 +181,7 @@ def get_case_summary(
                     {
                         "title": h["title"],
                         "interpretation": h["interpretation"],
-                        "techniques": h["technique_ids"].split(",") if h["technique_ids"] else [],
+                        "techniques": (h["technique_ids"] or "").split(",") if h["technique_ids"] else [],
                         "confidence": h["confidence_score"],
                     }
                     for h in hypotheses
@@ -230,43 +204,35 @@ def list_hosts(
     case_id: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """List all hosts in a case with cluster counts.
-
-    Returns:
-        Host list with activity metrics
-    """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
-
-    if not db_path:
-        db_path = "graph.db"
+    """List all hosts in a case with cluster counts."""
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         with connect(db_path, read_only=True) as conn:
             rows = conn.execute(
                 """
-                SELECT host, COUNT(*) as cluster_count, 
-                       MAX(trigger_event_timestamp) as last_activity,
-                       SUM(CASE WHEN score >= 40 THEN 1 ELSE 0 END) as high_score_clusters
+                SELECT primary_host AS host,
+                       COUNT(*) AS cluster_count,
+                       MAX(time_end) AS last_activity,
+                       SUM(CASE WHEN score >= 40 THEN 1 ELSE 0 END) AS high_score_clusters
                 FROM clusters WHERE case_id = ?
-                GROUP BY host
+                GROUP BY primary_host
                 ORDER BY cluster_count DESC
                 """,
                 (case_id,),
             ).fetchall()
 
-            hosts = []
-            for row in rows:
-                hosts.append({
+            hosts = [
+                {
                     "name": row["host"],
                     "cluster_count": row["cluster_count"],
                     "high_score_clusters": row["high_score_clusters"],
                     "last_activity": row["last_activity"],
-                })
+                }
+                for row in rows
+            ]
 
             return {
                 "success": True,
@@ -282,26 +248,16 @@ def get_evidence_gaps(
     case_id: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Get all evidence gaps for a case.
-
-    Returns:
-        List of unanswered questions
-    """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
-
-    if not db_path:
-        db_path = "graph.db"
+    """Get all evidence gaps for a case."""
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         with connect(db_path, read_only=True) as conn:
             rows = conn.execute(
                 """
-                SELECT gap_id, question, what_would_resolve, blocks_hypothesis, 
+                SELECT gap_id, question, what_would_resolve, blocks_hypothesis,
                        registered_at, registered_by
                 FROM evidence_gaps WHERE case_id = ?
                 ORDER BY registered_at DESC
@@ -309,16 +265,17 @@ def get_evidence_gaps(
                 (case_id,),
             ).fetchall()
 
-            gaps = []
-            for row in rows:
-                gaps.append({
+            gaps = [
+                {
                     "id": row["gap_id"],
                     "question": row["question"],
                     "what_would_resolve": row["what_would_resolve"],
                     "blocks_hypothesis": row["blocks_hypothesis"],
                     "registered_at": row["registered_at"],
                     "registered_by": row["registered_by"],
-                })
+                }
+                for row in rows
+            ]
 
             return {
                 "success": True,
@@ -335,29 +292,19 @@ def get_disturbances(
     host: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Get evidence disturbances (anti-forensic windows).
-
-    Returns:
-        List of disturbance windows
-    """
-    if not case_id:
-        active = get_active_case()
-        if not active:
-            return {"success": False, "error": "No active case"}
-        case_id = active.id
-        db_path = db_path or active.graph_db
-
-    if not db_path:
-        db_path = "graph.db"
+    """Get evidence disturbances (anti-forensic windows)."""
+    case_id, db_path, err = resolve_case_db(case_id, db_path)
+    if err:
+        return {"success": False, "error": err}
 
     try:
         with connect(db_path, read_only=True) as conn:
             sql = """
-                SELECT disturbance_id, host, window_start, window_end, 
+                SELECT disturbance_id, host, window_start, window_end,
                        disturbance_type, detected_by, details, created_at
                 FROM evidence_disturbances WHERE case_id = ?
             """
-            params = [case_id]
+            params: list[Any] = [case_id]
 
             if host:
                 sql += " AND host = ?"
@@ -367,9 +314,8 @@ def get_disturbances(
 
             rows = conn.execute(sql, params).fetchall()
 
-            disturbances = []
-            for row in rows:
-                disturbances.append({
+            disturbances = [
+                {
                     "id": row["disturbance_id"],
                     "host": row["host"],
                     "window_start": row["window_start"],
@@ -378,7 +324,9 @@ def get_disturbances(
                     "detected_by": row["detected_by"],
                     "details": row["details"],
                     "created_at": row["created_at"],
-                })
+                }
+                for row in rows
+            ]
 
             return {
                 "success": True,
