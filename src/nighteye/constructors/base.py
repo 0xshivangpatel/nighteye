@@ -339,7 +339,14 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
     # Per-(constructor, host, bucket) cluster accumulator.
     # Key: (constructor.name, host_name, bucket_key) -> Cluster
     cluster_index: dict[tuple[str, str, str], Cluster] = {}
-    # Per-host event reservoir for supporting-signal context
+    # Per-host event reservoir for supporting-signal context.
+    # Bounded by MAX_EVENTS_PER_HOST so memory stays flat regardless of
+    # canonical-event count: on a 4 GB / 8 GB swap host, an unbounded
+    # reservoir for 600k events per host (Win7 with EVTX + plaso_storage)
+    # was OOM-killing the process before any clusters were finalized.
+    # 50k events is plenty for the supporting-signal evaluators which
+    # only ever inspect events within ±2 grouping windows of a trigger.
+    MAX_EVENTS_PER_HOST = 50_000
     events_by_host: dict[str, list[CanonicalEvent]] = {}
 
     # Use case_index_pattern so the wildcard matches the lowercase
@@ -370,7 +377,14 @@ def run_all_constructors(client, case_id: str, db_path: str) -> dict[str, int]:
 
                 for ev in events:
                     if ev.host_name:
-                        events_by_host.setdefault(ev.host_name, []).append(ev)
+                        bucket = events_by_host.setdefault(ev.host_name, [])
+                        bucket.append(ev)
+                        # FIFO-evict oldest events once the per-host
+                        # reservoir crosses the cap. This keeps the
+                        # supporting-signal context window valid for
+                        # *recent* events without unbounded growth.
+                        if len(bucket) > MAX_EVENTS_PER_HOST:
+                            del bucket[: len(bucket) - MAX_EVENTS_PER_HOST]
 
                 # Score each event against each constructor's triggers.
                 for constructor in constructors:

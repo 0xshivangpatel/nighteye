@@ -371,7 +371,7 @@ class NightEyeOSClient:
         self,
         index: str,
         query: dict[str, Any],
-        scroll_timeout: str = "2m",
+        scroll_timeout: str = "30m",
         page_size: int = 1000,
     ) -> list[dict[str, Any]]:
         """Paginated search using scroll API for large result sets.
@@ -402,7 +402,7 @@ class NightEyeOSClient:
         self,
         index: str,
         query: dict[str, Any],
-        scroll_timeout: str = "2m",
+        scroll_timeout: str = "30m",
         page_size: int = 1000,
     ):
         """Iterator version of scroll_search — yields pages of hits.
