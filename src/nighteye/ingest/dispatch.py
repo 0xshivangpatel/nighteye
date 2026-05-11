@@ -79,6 +79,13 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".vmem": EvidenceType.MEMORY_DUMP,
     ".raw": EvidenceType.MEMORY_DUMP,
     ".lime": EvidenceType.MEMORY_DUMP,
+    # Sequential FTK / dd raw memory acquisitions. Without these mappings,
+    # standard SIFT/SANS memory layouts (host-name-memory-raw.001) get
+    # dropped to UNKNOWN and never hit the memory pipeline.
+    ".001": EvidenceType.MEMORY_DUMP,
+    ".002": EvidenceType.MEMORY_DUMP,
+    ".003": EvidenceType.MEMORY_DUMP,
+    ".004": EvidenceType.MEMORY_DUMP,
     ".pf": EvidenceType.PREFETCH,
     ".pcap": EvidenceType.PCAP,
     ".pcapng": EvidenceType.PCAP,

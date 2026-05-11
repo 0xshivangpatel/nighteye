@@ -34,8 +34,8 @@ def run_chainsaw(
     evidence_path: Path,
     host_name: str,
     case_id: str,
-    rules_path: str = "sigma/",
-    mapping_path: str = "mapping.yaml",
+    rules_path: str | None = None,
+    mapping_path: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run Chainsaw and yield ECS-mapped alerts.
 
@@ -43,8 +43,10 @@ def run_chainsaw(
         evidence_path: Path to the EVTX file or directory.
         host_name: Resolved host name for these events.
         case_id: The case ID.
-        rules_path: Path to the Sigma rules directory.
-        mapping_path: Path to the Chainsaw mapping file.
+        rules_path: Sigma rules directory. Defaults to /opt/chainsaw/sigma
+            (where setup.sh installs SigmaHQ rules).
+        mapping_path: Chainsaw mapping YAML. Defaults to the
+            sigma-event-logs-all.yml shipped alongside chainsaw.
 
     Yields:
         ECS alert documents ready for OpenSearch.
@@ -53,6 +55,16 @@ def run_chainsaw(
     if not exe:
         logger.warning("Chainsaw not found in PATH. Skipping Chainsaw alerts.")
         return
+
+    # Resolve the bundled rule + mapping paths installed by setup.sh
+    if rules_path is None:
+        rules_path = "/opt/chainsaw/sigma" if Path("/opt/chainsaw/sigma").is_dir() else "sigma/"
+    if mapping_path is None:
+        candidates = [
+            "/opt/chainsaw/mappings/sigma-event-logs-all.yml",
+            "/opt/chainsaw/mappings/sigma-event-logs-legacy.yml",
+        ]
+        mapping_path = next((p for p in candidates if Path(p).is_file()), "mapping.yaml")
 
     with tempfile.TemporaryDirectory(prefix="nighteye_chainsaw_") as tmpdir:
         out_file = Path(tmpdir) / "alerts.json"

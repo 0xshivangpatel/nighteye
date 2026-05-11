@@ -712,12 +712,20 @@ def ingest_e01_extraction(
             mft_csv = _run_mftecmd(result["mft"], ez_output)
 
         # Phase 3: Ingest
+        # EVTX: _run_evtxecmd writes one CSV per input EVTX into evtx_csv/
+        # but only returns the first (which on some filesystems happens to
+        # be the empty Windows-PowerShell stub). Glob the directory and
+        # parse every CSV so all 4 EVTX files contribute their events.
         if evtx_csv:
+            evtx_csv_dir = Path(evtx_csv).parent
+            all_evtx_csvs = sorted(evtx_csv_dir.glob("*EvtxECmd*.csv"))
             idx = f"case-{case_id.lower()}-evtx-{host}"
-            docs = list(_parse_evtxecmd_csv(evtx_csv, host))
-            client.bulk_index_iter(idx, docs)
-            stats["documents_indexed"] += len(docs)
-            logger.info("  EVTX: %d docs", len(docs))
+            evtx_docs: list[dict] = []
+            for csv_path in all_evtx_csvs:
+                evtx_docs.extend(list(_parse_evtxecmd_csv(csv_path, host)))
+            client.bulk_index_iter(idx, evtx_docs)
+            stats["documents_indexed"] += len(evtx_docs)
+            logger.info("  EVTX: %d docs from %d CSVs", len(evtx_docs), len(all_evtx_csvs))
 
         if mft_csv:
             idx = f"case-{case_id.lower()}-mft-{host}"

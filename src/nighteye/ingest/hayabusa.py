@@ -67,12 +67,18 @@ def run_hayabusa(
         logger.info("Running Hayabusa on %s...", evidence_path.name)
         logger.debug("Command: %s", " ".join(cmd))
 
+        # Hayabusa looks for its config files relative to cwd ("rules/config/...")
+        # so it must run from the rule pack root. The bundled rule pack is
+        # installed by setup.sh under /opt/hayabusa.
+        haya_cwd = "/opt/hayabusa" if Path("/opt/hayabusa/rules").is_dir() else None
+
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=1200,  # 20 min timeout for large directories
+                cwd=haya_cwd,
             )
             # Hayabusa often exits non-zero if it found errors in some files,
             # but still generates the output for others.
