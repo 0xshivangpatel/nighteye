@@ -455,7 +455,13 @@ def build_ingest_plan(
             is_extraction = "extractions" in str(root).lower()
             effective_recursive = True if is_extraction else recursive
             
-            archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz", ".e01", ".ex01", ".e02"}
+            # Compressed-archive containers that should be skipped here
+            # because extract_archives() already handled them.
+            # NOTE: forensic disk images (.e01/.ex01/.e02) are NOT skipped —
+            # they must reach the ingest plan as first-class E01_IMAGE
+            # groups so executor.py can drive ingest_e01_extraction
+            # (mount → EZ Tools → Hayabusa → Chainsaw → YARA).
+            archive_exts = {".zip", ".7z", ".rar", ".tar", ".gz"}
 
             def _walk(root_dir: Path):
                 """Walk directory tree, pruning E01 extraction subtrees."""
