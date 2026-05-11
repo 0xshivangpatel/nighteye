@@ -23,8 +23,15 @@ logger = logging.getLogger("nighteye.ingest.memprocfs")
 
 
 def is_memprocfs_available() -> bool:
-    """Check if MemProcFS is available in PATH."""
-    return shutil.which("MemProcFS") is not None or shutil.which("MemProcFS.exe") is not None
+    """Check if MemProcFS is available in PATH.
+
+    The Linux release ships as lowercase ``memprocfs``; the Windows
+    build is ``MemProcFS.exe`` / ``MemProcFS``.
+    """
+    for name in ("memprocfs", "MemProcFS", "MemProcFS.exe"):
+        if shutil.which(name):
+            return True
+    return False
 
 
 def extract_memprocfs(
@@ -43,7 +50,9 @@ def extract_memprocfs(
         Path to the root of the extracted MemProcFS forensic directory.
         (Yields exactly once if successful).
     """
-    exe = shutil.which("MemProcFS") or shutil.which("MemProcFS.exe")
+    exe = (shutil.which("memprocfs")
+           or shutil.which("MemProcFS")
+           or shutil.which("MemProcFS.exe"))
     if not exe:
         logger.warning("MemProcFS not found in PATH. Skipping bulk memory extraction.")
         return

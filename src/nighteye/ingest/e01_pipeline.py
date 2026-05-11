@@ -733,6 +733,79 @@ def ingest_e01_extraction(
             stats["documents_indexed"] += len(docs)
             logger.info("  Registry: %d docs", len(docs))
 
+        # 3d: Prefetch — uses python_prefetch (header-only parser, fast,
+        # works without PECmd installed). Yields one ECS doc per
+        # (loaded_module × run_time) so the constructors can correlate
+        # execution sequence with DLL dependency.
+        if result.get("prefetch"):
+            from nighteye.ingest.python_prefetch import parse_prefetch
+            idx = f"case-{case_id.lower()}-prefetch-{host}"
+            pf_docs: list[dict] = []
+            for pf_path in result["prefetch"]:
+                try:
+                    pf_docs.extend(list(parse_prefetch(
+                        pf_path, host_name=host,
+                        source_file=str(pf_path),
+                        audit_id=f"ingest-prefetch-{host}",
+                    )))
+                except Exception as exc:
+                    logger.debug("Prefetch parse failed for %s: %s", pf_path.name, exc)
+            if pf_docs:
+                client.bulk_index_iter(idx, pf_docs)
+                stats["documents_indexed"] += len(pf_docs)
+                logger.info("  Prefetch: %d docs from %d .pf files",
+                            len(pf_docs), len(result["prefetch"]))
+
+        # 3e: Amcache — try AmcacheParser if installed (PECmd-style .NET tool).
+        # Skip silently if Amcache.hve wasn't extracted (XP / older Win7 builds
+        # don't have it) or if the parser binary isn't on PATH.
+        if result.get("amcache") and os.path.exists("/usr/local/bin/AmcacheParser"):
+            try:
+                amc_csv_dir = ez_output / "amcache_csv"
+                amc_csv_dir.mkdir(exist_ok=True)
+                subprocess.run(
+                    ["AmcacheParser", "-f", str(result["amcache"]),
+                     "--csv", str(amc_csv_dir)],
+                    capture_output=True, timeout=120,
+                )
+                amc_csvs = list(amc_csv_dir.glob("*UnassociatedFileEntries*.csv"))
+                if amc_csvs:
+                    import csv as _csv
+                    idx = f"case-{case_id.lower()}-amcache-{host}"
+                    docs: list[dict] = []
+                    with open(amc_csvs[0], encoding="utf-8-sig") as f:
+                        for row in _csv.DictReader(f):
+                            docs.append({
+                                "@timestamp": row.get("FileKeyLastWriteTimestamp")
+                                              or row.get("ProgramName") or "",
+                                "host": {"name": host},
+                                "host_name": host,
+                                "case_id": case_id,
+                                "event": {"action": "amcache-execution",
+                                          "category": ["process"]},
+                                "process": {
+                                    "name": row.get("Name", ""),
+                                    "executable": row.get("FullPath", ""),
+                                    "hash": {"sha1": row.get("SHA1", "")},
+                                },
+                                "process_name": row.get("Name", ""),
+                                "process_path": row.get("FullPath", ""),
+                                "canonical_type": "PROCESS_EXECUTION",
+                                "nighteye": {
+                                    "ingest_id": "amcache",
+                                    "audit_id": f"ingest-amcache-{host}",
+                                    "parser": "AmcacheParser",
+                                    "canonical_type": "PROCESS_EXECUTION",
+                                    "case_id": case_id,
+                                },
+                            })
+                    if docs:
+                        client.bulk_index_iter(idx, docs)
+                        stats["documents_indexed"] += len(docs)
+                        logger.info("  Amcache: %d docs", len(docs))
+            except Exception as exc:
+                logger.debug("Amcache parser failed: %s", exc)
+
         shutil.rmtree(ez_output, ignore_errors=True)
 
     except Exception as exc:
