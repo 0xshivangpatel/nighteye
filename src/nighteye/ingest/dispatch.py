@@ -63,6 +63,7 @@ class EvidenceType(str, Enum):
     SCHEDULED_TASK_XML = "scheduled_task_xml"
     SYSMON_CONFIG = "sysmon_config"
     REDLINE_MANS = "redline_mans"
+    PLASO_STORAGE = "plaso_storage"   # log2timeline.py output (.plaso file)
     UNKNOWN = "unknown"
 
 
@@ -91,6 +92,7 @@ _EXTENSION_MAP: dict[str, EvidenceType] = {
     ".json": EvidenceType.WIN_TIMELINE,  # volatility JSON / redline JSON output
     ".jsonl": EvidenceType.WIN_TIMELINE,
     ".mans": EvidenceType.REDLINE_MANS,
+    ".plaso": EvidenceType.PLASO_STORAGE,  # → re-export via psort -o json_line
     # Executable types — metadata-indexed for path/timestamp evidence
     ".exe": EvidenceType.UNKNOWN,
     ".dll": EvidenceType.UNKNOWN,

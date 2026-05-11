@@ -35,6 +35,10 @@ from nighteye.ingest.parsers.srum import parse_srum_record
 # previous Vol2 output) is a false positive and should be skipped.
 _REAL_MEMORY_EXTENSIONS = frozenset({
     ".mem", ".raw", ".dmp", ".vmem", ".lime", ".bin",
+    # Sequential FTK / dd raw images: .001 / .002 / ... / .E00 (legacy
+    # memory or split disk acquisitions). Without these, vol3 gets
+    # silently skipped on standard SANS / SIFT memory layouts.
+    ".001", ".002", ".003", ".004",
 })
 
 __all__ = ["execute_ingest_plan"]
@@ -509,6 +513,24 @@ def _stream_group_docs(group: IngestGroup, case_id: str, pbar: Any = None) -> It
             )
             continue
 
+        # 0. E01 disk images — full mount + EZ Tools + Hayabusa + Chainsaw
+        # + YARA pipeline. The orchestrator's extract phase already ran
+        # Plaso log2timeline against the image (producing precooked/timeline/
+        # plaso.csv). This phase pulls EVTX/MFT/registry/prefetch/amcache
+        # via fls/icat through ewfmount and runs the .NET tools on each.
+        if artifact_type == EvidenceType.E01_IMAGE:
+            from nighteye.ingest.e01_pipeline import ingest_e01_extraction
+            from nighteye.ingest.opensearch_client import NightEyeOSClient
+            client = NightEyeOSClient()
+            stats = ingest_e01_extraction(
+                evidence.path, host=host_name, case_id=case_id, client=client
+            )
+            logger.info("E01 pipeline produced %d docs (%d errors) for %s",
+                        stats.get("documents_indexed", 0),
+                        stats.get("errors", 0), host_name)
+            # The pipeline indexed everything itself; nothing to yield up.
+            continue
+
         # 1. EVTX Parsing
         if artifact_type in (EvidenceType.EVTX_FILE, EvidenceType.EVTX_FOLDER):
             yield from parse_evtx_file(
@@ -596,6 +618,11 @@ def _stream_group_docs(group: IngestGroup, case_id: str, pbar: Any = None) -> It
         elif artifact_type == EvidenceType.REDLINE_MANS:
             from nighteye.ingest.redline_mans import stream_redline_mans
             yield from stream_redline_mans(evidence.path, host_name)
+        elif artifact_type == EvidenceType.PLASO_STORAGE:
+            from nighteye.ingest.plaso_storage import parse_plaso_storage
+            yield from parse_plaso_storage(
+                evidence.path, host_name=host_name, case_id=case_id,
+            )
         elif artifact_type != EvidenceType.UNKNOWN:
             yield _metadata_doc(evidence.path, artifact_type, host_name, source_file, audit_id)
         else:

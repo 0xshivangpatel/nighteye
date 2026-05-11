@@ -808,6 +808,42 @@ def ingest_e01_extraction(
 
         shutil.rmtree(ez_output, ignore_errors=True)
 
+        # Phase 4: Sigma-rule scanning over the extracted EVTX
+        # (Hayabusa) + (Chainsaw with full SigmaHQ rules)
+        evtx_dir = work_dir / "evtx"
+        if evtx_dir.exists() and any(evtx_dir.glob("*.evtx")):
+            from nighteye.ingest.hayabusa import is_hayabusa_available, run_hayabusa
+            from nighteye.ingest.chainsaw import is_chainsaw_available, run_chainsaw
+            if is_hayabusa_available():
+                logger.info("  Running Hayabusa on %s ...", evtx_dir)
+                hay_docs = list(run_hayabusa(evtx_dir, host_name=host, case_id=case_id))
+                if hay_docs:
+                    idx = f"case-{case_id.lower()}-hayabusa-{host}"
+                    client.bulk_index_iter(idx, hay_docs)
+                    stats["documents_indexed"] += len(hay_docs)
+                    logger.info("  Hayabusa: %d alerts → %s", len(hay_docs), idx)
+            if is_chainsaw_available():
+                logger.info("  Running Chainsaw on %s ...", evtx_dir)
+                chs_docs = list(run_chainsaw(evtx_dir, host_name=host, case_id=case_id))
+                if chs_docs:
+                    idx = f"case-{case_id.lower()}-chainsaw-{host}"
+                    client.bulk_index_iter(idx, chs_docs)
+                    stats["documents_indexed"] += len(chs_docs)
+                    logger.info("  Chainsaw: %d hits → %s", len(chs_docs), idx)
+
+        # Phase 5: YARA scan over the entire extracted-artifact tree
+        # (catches packers, known-malware byte signatures, in-memory
+        # decompiled drops; uses Neo23x0/signature-base rules).
+        from nighteye.ingest.yara import is_yara_available, run_yara
+        if is_yara_available():
+            logger.info("  Running YARA on %s ...", work_dir)
+            yara_docs = list(run_yara(work_dir, host_name=host, case_id=case_id))
+            if yara_docs:
+                idx = f"case-{case_id.lower()}-yara-{host}"
+                client.bulk_index_iter(idx, yara_docs)
+                stats["documents_indexed"] += len(yara_docs)
+                logger.info("  YARA: %d matches → %s", len(yara_docs), idx)
+
     except Exception as exc:
         logger.error("E01 pipeline failed for %s: %s", host, exc)
         stats["errors"] += 1

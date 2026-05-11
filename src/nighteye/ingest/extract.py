@@ -33,7 +33,11 @@ ARCHIVE_EXTS: frozenset[str] = frozenset({
     ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".tar.gz", ".tar.bz2",
 })
 IMAGE_EXTS: frozenset[str] = frozenset({
-    ".e01", ".ex01", ".e02", ".raw", ".dd", ".img", ".vmdk", ".vhd", ".vhdx",
+    # Disk image formats that have container/archive structure 7z can crack.
+    # Raw images (.raw, .img, .dd, .001) are not archives — they pass through
+    # to dispatch which routes them as MEMORY_DUMP or RAW disk depending on
+    # filename hints. Trying to 7z-extract them produces a fatal error.
+    ".e01", ".ex01", ".e02", ".vmdk", ".vhd", ".vhdx",
 })
 E01_EXTS: frozenset[str] = frozenset({".e01", ".ex01", ".e02"})
 
