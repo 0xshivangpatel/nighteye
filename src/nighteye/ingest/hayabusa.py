@@ -55,13 +55,21 @@ def run_hayabusa(
 
         # hayabusa json-timeline -d <dir> -o <out.json>
         # or for file: -f <file>
+        # --no-wizard: skip the interactive scan-profile prompt; without
+        #              this, hayabusa panics with "not a terminal" when
+        #              stdin is captured by subprocess.
+        # --clobber:   overwrite an existing output file rather than abort.
+        # --ISO-8601:  consistent timestamp format for our parser.
         target_flag = "-f" if evidence_path.is_file() else "-d"
         cmd = [
             exe,
             "json-timeline",
             target_flag, str(evidence_path),
             "-o", str(out_file),
-            "-q",  # Quiet mode
+            "-q",
+            "--no-wizard",
+            "--clobber",
+            "--ISO-8601",
         ]
 
         logger.info("Running Hayabusa on %s...", evidence_path.name)
