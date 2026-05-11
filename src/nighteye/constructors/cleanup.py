@@ -283,10 +283,21 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             if is_aggregate:
                 continue
 
-            # Only seed hypotheses for MODERATE+ clusters or clusters
-            # with high-value keep triggers
-            if not (is_moderate_plus or has_keep_trigger):
+            # Skip clusters whose every trigger is in the explicit noise
+            # list (those would have been collapsed already; this is a
+            # safety net). Skip outright NOISE strength.
+            if strength == "NOISE":
                 continue
+            if triggers and all(t in _NOISE_TRIGGERS for t in triggers):
+                continue
+
+            # Anything else surviving the noise-aggregation pass deserves a
+            # DRAFT hypothesis. The aggregator already handled the
+            # "too-many-benign-events" reduction problem; a second filter
+            # here only hides real WEAK-strength findings (lateral move,
+            # remote exec, persistence) that the agent should triage.
+            # Wide ingest needs reduction, not censorship.
+            _ = (is_moderate_plus, has_keep_trigger)  # informational only
 
             # Skip if hypothesis already exists for this cluster
             existing = conn.execute(

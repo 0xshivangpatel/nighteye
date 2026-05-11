@@ -80,10 +80,13 @@ def _run_volatility_plugin(
     case_id: str,
 ) -> Iterator[dict[str, Any]]:
     with tempfile.TemporaryDirectory(prefix=f"nighteye_vol_{plugin}_") as tmpdir:
-        # Volatility 3 command to output JSON
-        # Format: vol -f <file> -r json -o <outdir> <plugin>
+        # Volatility 3 emits the renderer output (JSON / CSV / pretty)
+        # to STDOUT; the -o flag controls a per-plugin OUTPUT_DIR for
+        # auxiliary files (dumpfiles output etc.), not the renderer.
+        # Capture stdout and parse it as JSON.
         cmd = [
             exe,
+            "-q",                   # quiet — suppresses progress noise
             "-f", str(evidence_path),
             "-r", "json",
             "-o", tmpdir,
@@ -98,38 +101,55 @@ def _run_volatility_plugin(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=3600,  # Memory analysis can take a long time (60 mins)
+                timeout=3600,
             )
             if result.returncode != 0:
-                logger.error("Volatility plugin %s failed: %s", plugin, result.stderr[:500])
-                # Note: some plugins fail gracefully, so we still check for output
+                logger.warning(
+                    "Volatility plugin %s exited %d: %s",
+                    plugin, result.returncode, result.stderr[-300:],
+                )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             logger.error("Volatility execution failed for %s: %s", plugin, exc)
             return
 
-        # Find the generated JSON file (volatility names it based on the plugin and timestamp)
-        out_files = list(Path(tmpdir).glob("*.json"))
-        if not out_files:
-            logger.warning("No Volatility JSON output found for %s", plugin)
+        # Strip Vol3's framework banner if present, then parse stdout.
+        stdout = result.stdout or ""
+        if stdout.lstrip().startswith("Volatility"):
+            # First line is "Volatility 3 Framework <version>" — drop it.
+            _, _, stdout = stdout.partition("\n")
+        stdout = stdout.strip()
+
+        rows: list[dict[str, Any]] = []
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                rows = data if isinstance(data, list) else data.get("rows", [])
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Failed to parse Vol3 stdout JSON for %s: %s (first 200 chars: %s)",
+                    plugin, exc, stdout[:200],
+                )
+        # Fallback: some Vol3 plugins also write JSON files into -o dir
+        # (notably dumpfiles); union those rows in.
+        for out_file in Path(tmpdir).glob("*.json"):
+            try:
+                with open(out_file, encoding="utf-8") as f:
+                    file_data = json.load(f)
+                file_rows = file_data if isinstance(file_data, list) else file_data.get("rows", [])
+                rows.extend(file_rows)
+            except Exception:
+                pass
+
+        if not rows:
+            logger.warning("No Volatility output for %s", plugin)
             return
 
-        for out_file in out_files:
-            try:
-                with open(out_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    
-                source_file = str(evidence_path)
-                
-                # Volatility JSON output is a list of rows, or a dict wrapping rows depending on version
-                rows = data if isinstance(data, list) else data.get("rows", [])
-                
-                for row in rows:
-                    doc = parse_volatility_record(row, plugin, host_name, source_file, case_id)
-                    if doc:
-                        yield doc
-                        
-            except Exception as exc:
-                logger.error("Failed to parse Volatility output from %s: %s", out_file.name, exc)
+        source_file = str(evidence_path)
+        for row in rows:
+            doc = parse_volatility_record(row, plugin, host_name, source_file, case_id)
+            if doc:
+                yield doc
+        logger.info("Vol3 %s yielded %d ECS docs", plugin, len(rows))
 
 
 def parse_volatility_record(

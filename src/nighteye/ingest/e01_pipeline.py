@@ -467,12 +467,24 @@ def _parse_evtxecmd_csv(csv_path: Path, host: str) -> Iterator[dict[str, Any]]:
                 except ValueError:
                     continue
 
-            # Parse Payload JSON for 4624 logon details
+            # Parse Payload JSON. Fields vary per EventID; we extract all
+            # relevant ones into a single dict so 4624 (logon), 4688/Sysmon-1
+            # (process create), 4697/7045 (service install) etc. each find
+            # their data. ParentImage / ParentProcessName is critical for
+            # the SuspiciousLineage constructor's office-spawned-interpreter
+            # detection chain.
             target_user = row.get("UserName", "")
             target_domain = ""
             source_ip = ""
             logon_type = ""
             workstation = ""
+            cmdline = ""
+            new_proc_name = ""
+            new_proc_path = ""
+            parent_proc_name = ""
+            parent_proc_path = ""
+            new_pid = None
+            parent_pid = None
 
             payload_raw = row.get("Payload", "")
             if payload_raw:
@@ -493,6 +505,30 @@ def _parse_evtxecmd_csv(csv_path: Path, host: str) -> Iterator[dict[str, Any]]:
                             logon_type = text
                         elif name == "WorkstationName":
                             workstation = text
+                        elif name in ("CommandLine", "ProcessCommandLine"):
+                            cmdline = text
+                        elif name == "NewProcessName":
+                            new_proc_path = text
+                            new_proc_name = text.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                        elif name == "ParentProcessName":
+                            parent_proc_path = text
+                            parent_proc_name = text.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                        elif name == "Image":  # Sysmon EID 1
+                            new_proc_path = text
+                            new_proc_name = text.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                        elif name == "ParentImage":  # Sysmon EID 1
+                            parent_proc_path = text
+                            parent_proc_name = text.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                        elif name in ("NewProcessId", "ProcessId") and not new_pid:
+                            try:
+                                new_pid = int(text, 16) if text.startswith("0x") else int(text)
+                            except (ValueError, TypeError):
+                                pass
+                        elif name == "ParentProcessId" and not parent_pid:
+                            try:
+                                parent_pid = int(text, 16) if text.startswith("0x") else int(text)
+                            except (ValueError, TypeError):
+                                pass
                 except Exception:
                     pass
 
@@ -522,11 +558,51 @@ def _parse_evtxecmd_csv(csv_path: Path, host: str) -> Iterator[dict[str, Any]]:
                     cat, action = "network", "network-share-access"
                 elif eid == "4674":
                     cat, action = "configuration", "privileged-operation"
+                elif eid == "4688":
+                    cat, action = "process", "process-created"
+                elif eid == "4689":
+                    cat, action = "process", "process-terminated"
+            elif ch.startswith("Microsoft-Windows-Sysmon"):
+                if eid == "1":
+                    cat, action = "process", "process-created"
+                elif eid == "3":
+                    cat, action = "network", "network-connection"
+                elif eid in ("12", "13"):
+                    cat, action = "configuration", "registry-modified"
             elif "System" in ch:
                 cat, action = "configuration", "system-event"
 
             proc_info = row.get("ExecutableInfo", "")
-            proc_name = proc_info.split("\\")[-1] if "\\" in proc_info else proc_info
+            # Prefer the parsed-from-EventData process info over the
+            # generic ExecutableInfo row column. For 4688/Sysmon-1 events
+            # this gives us the actual NewProcessName and a fully
+            # resolved ParentProcessName so SuspiciousLineage can match
+            # office-spawned-interpreter chains.
+            proc_name = new_proc_name or (proc_info.split("\\")[-1] if "\\" in proc_info else proc_info)
+            proc_path = new_proc_path or proc_info
+
+            extra = {
+                "winlog": {
+                    "channel": ch,
+                    "event_id": eid,
+                    "logon_type": logon_type,
+                    "workstation": workstation,
+                    "description": row.get("MapDescription", ""),
+                    "provider": row.get("Provider", ""),
+                },
+                "message": row.get("MapDescription", "") or f"Event {eid}",
+            }
+            if parent_proc_name or parent_proc_path or parent_pid:
+                extra["process.parent.name"] = parent_proc_name
+                extra["process.parent.executable"] = parent_proc_path
+                if parent_pid is not None:
+                    extra["process.parent.pid"] = parent_pid
+                # Also flatten under winlog.event_data so canonical
+                # normalization sees the field for ParentImage matching.
+                extra.setdefault("winlog.event_data", {})
+                if isinstance(extra["winlog.event_data"], dict):
+                    extra["winlog.event_data"]["ParentImage"] = parent_proc_path
+                    extra["winlog.event_data"]["ParentProcessName"] = parent_proc_name
 
             yield build_ecs_doc(
                 timestamp=ts,
@@ -538,18 +614,10 @@ def _parse_evtxecmd_csv(csv_path: Path, host: str) -> Iterator[dict[str, Any]]:
                 user_domain=target_domain,
                 source_ip=source_ip,
                 process_name=proc_name,
-                process_executable=proc_info,
-                extra={
-                    "winlog": {
-                        "channel": ch,
-                        "event_id": eid,
-                        "logon_type": logon_type,
-                        "workstation": workstation,
-                        "description": row.get("MapDescription", ""),
-                        "provider": row.get("Provider", ""),
-                    },
-                    "message": row.get("MapDescription", "") or f"Event {eid}",
-                },
+                process_executable=proc_path,
+                process_command_line=cmdline,
+                process_pid=new_pid,
+                extra=extra,
             )
 
 
