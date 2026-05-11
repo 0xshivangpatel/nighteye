@@ -370,12 +370,16 @@ def extract_archives(target_dir: Path, recursive: bool = True) -> list[Path]:
             logger.debug("Skipping previously-failed %s", source.name)
             continue
 
-        # Skip nested zips inside already-extracted dirs — these are
-        # application data (McAfee agents, etc.), not forensic evidence.
-        # Check for _nighteye/ or \_nighteye\ (dir separator before marker name).
+        # Skip nested ZIPs/RARs/etc inside already-extracted dirs — these
+        # are application data (McAfee agents, browser caches), not forensic
+        # evidence. BUT forensic images (.E01/.e01/.001/.dd) embedded inside
+        # an extracted-zip layout ARE the primary disk image and must be
+        # extracted by the next ewfmount/E01 step below.
         if "_nighteye/" in source_key.lower() or "_nighteye\\" in source_key.lower():
-            logger.debug("Skipping nested zip inside extraction: %s", source.name)
-            continue
+            if source.suffix.lower() not in E01_EXTS and not _is_image(source):
+                logger.debug("Skipping nested archive inside extraction: %s", source.name)
+                continue
+            logger.info("Found forensic image inside extraction: %s", source.name)
 
         if _is_archive(source):
             logger.info("Extracting archive %s -> %s", source.name, out_dir)

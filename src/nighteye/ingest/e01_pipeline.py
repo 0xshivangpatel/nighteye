@@ -118,13 +118,14 @@ def _mount_e01(e01_path: Path) -> Path | None:
             stderr=subprocess.PIPE,
         )
         time.sleep(3)
-        
-        # Check if process is still running
-        if proc.poll() is not None:
-            # Process exited early - likely an error
+
+        # ewfmount daemonizes after a successful mount, so the parent
+        # process exits with code 0. A non-zero exit is the failure case.
+        rc = proc.poll()
+        if rc is not None and rc != 0:
             _, stderr = proc.communicate()
             error_msg = stderr.decode('utf-8', errors='ignore')[:500] if stderr else "Unknown error"
-            logger.error("ewfmount failed to mount %s: %s", e01_path.name, error_msg)
+            logger.error("ewfmount failed to mount %s (rc=%d): %s", e01_path.name, rc, error_msg)
             shutil.rmtree(mount_dir, ignore_errors=True)
             return None
 
@@ -308,6 +309,62 @@ def _extract_mft(raw_path: Path, work_dir: Path) -> Path | None:
             dest = work_dir / "MFT"
             if _icat_extract(raw_path, ino, dest):
                 logger.info("  MFT: %d KB", dest.stat().st_size // 1024)
+                return dest
+    return None
+
+
+def _extract_prefetch(raw_path: Path, work_dir: Path) -> list[Path]:
+    """Extract Windows\\Prefetch\\*.pf files."""
+    pf_dir = work_dir / "prefetch"
+    pf_dir.mkdir(exist_ok=True)
+    extracted: list[Path] = []
+
+    pf_inode = _resolve_path(raw_path, "Windows", "Prefetch")
+    if not pf_inode:
+        pf_inode = _resolve_path(raw_path, "WINDOWS", "Prefetch")
+    if not pf_inode:
+        logger.info("No Prefetch directory found")
+        return extracted
+
+    for ino, name in _fls_list(raw_path, pf_inode):
+        if not name.lower().endswith(".pf"):
+            continue
+        dest = pf_dir / name
+        if _icat_extract(raw_path, ino, dest):
+            extracted.append(dest)
+
+    if extracted:
+        logger.info("  Prefetch: %d .pf files", len(extracted))
+    return extracted
+
+
+def _extract_amcache(raw_path: Path, work_dir: Path) -> Path | None:
+    """Extract Amcache.hve from Windows\\AppCompat\\Programs\\."""
+    amc_inode = _resolve_path(raw_path, "Windows", "AppCompat", "Programs")
+    if not amc_inode:
+        amc_inode = _resolve_path(raw_path, "WINDOWS", "AppCompat", "Programs")
+    if not amc_inode:
+        return None
+
+    for ino, name in _fls_list(raw_path, amc_inode):
+        if name.lower() == "amcache.hve":
+            dest = work_dir / "Amcache.hve"
+            if _icat_extract(raw_path, ino, dest):
+                logger.info("  Amcache: %d KB", dest.stat().st_size // 1024)
+                return dest
+    return None
+
+
+def _extract_srum(raw_path: Path, work_dir: Path) -> Path | None:
+    """Extract SRUDB.dat from Windows\\System32\\sru\\."""
+    sru_inode = _resolve_path(raw_path, "Windows", "System32", "sru")
+    if not sru_inode:
+        return None
+    for ino, name in _fls_list(raw_path, sru_inode):
+        if name.lower() == "srudb.dat":
+            dest = work_dir / "SRUDB.dat"
+            if _icat_extract(raw_path, ino, dest):
+                logger.info("  SRUM: %d KB", dest.stat().st_size // 1024)
                 return dest
     logger.info("No $MFT found in root")
     return None
@@ -588,12 +645,23 @@ def extract_e01_artifacts(e01_path: Path) -> dict[str, Any] | None:
         return None
 
     work_dir = Path(tempfile.mkdtemp(prefix="e01-extract-"))
-    result = {"work_dir": work_dir, "evtx": [], "registry": [], "mft": None}
+    result: dict[str, Any] = {
+        "work_dir": work_dir,
+        "evtx": [],
+        "registry": [],
+        "mft": None,
+        "prefetch": [],
+        "amcache": None,
+        "srum": None,
+    }
 
     try:
         result["evtx"] = _extract_evtx(raw_path, work_dir)
         result["registry"] = _extract_registry(raw_path, work_dir)
         result["mft"] = _extract_mft(raw_path, work_dir)
+        result["prefetch"] = _extract_prefetch(raw_path, work_dir)
+        result["amcache"] = _extract_amcache(raw_path, work_dir)
+        result["srum"] = _extract_srum(raw_path, work_dir)
     finally:
         _unmount_e01(raw_path.parent)
 
