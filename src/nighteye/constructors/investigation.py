@@ -39,16 +39,24 @@ _JOURNAL_COUNTER = [0]
 
 def _journal(conn: Any, case_id: str, entry_type: str, summary: str,
              details: dict | None = None) -> None:
-    """Write a journal entry matching MCP tool schemas."""
-    now = datetime.now(timezone.utc).isoformat()
+    """Write a journal entry matching MCP tool schemas.
+
+    entry_id must be unique across all prior runs against the same case
+    DB. A module-level counter alone collides on every re-investigation,
+    so we append microsecond timestamp + 6 random hex chars.
+    """
+    import secrets
+    now = datetime.now(timezone.utc)
     _JOURNAL_COUNTER[0] += 1
-    eid = f"{entry_type}-{case_id}-{_JOURNAL_COUNTER[0]:04d}"
+    ts_compact = now.strftime("%Y%m%d%H%M%S%f")
+    eid = (f"{entry_type}-{case_id}-{ts_compact}-"
+           f"{_JOURNAL_COUNTER[0]:04d}-{secrets.token_hex(3)}")
     execute_with_retry(
         conn,
         """INSERT INTO journal (entry_id, case_id, timestamp, entry_type,
            summary, details, agent_session_id)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (eid, case_id, now, entry_type, summary,
+        (eid, case_id, now.isoformat(), entry_type, summary,
          json.dumps(details or {}), _AGENT_SESSION),
     )
 
