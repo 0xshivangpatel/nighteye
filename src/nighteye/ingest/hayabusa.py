@@ -51,20 +51,23 @@ def run_hayabusa(
         return
 
     with tempfile.TemporaryDirectory(prefix="nighteye_hayabusa_") as tmpdir:
-        out_file = Path(tmpdir) / "alerts.json"
+        out_file = Path(tmpdir) / "alerts.jsonl"
 
-        # hayabusa json-timeline -d <dir> -o <out.json>
-        # or for file: -f <file>
-        # --no-wizard: skip the interactive scan-profile prompt; without
-        #              this, hayabusa panics with "not a terminal" when
-        #              stdin is captured by subprocess.
+        # hayabusa json-timeline -d <dir> -L -o <out.jsonl>
+        # --no-wizard: skip the interactive scan-profile prompt (would
+        #              otherwise panic with "not a terminal" under subprocess).
         # --clobber:   overwrite an existing output file rather than abort.
-        # --ISO-8601:  consistent timestamp format for our parser.
+        # --ISO-8601:  consistent timestamp format.
+        # -L:          emit JSONL (one record per line). Without this Hayabusa
+        #              writes multi-line indented JSON objects concatenated
+        #              together, which neither a JSONL nor an array parser
+        #              can read.
         target_flag = "-f" if evidence_path.is_file() else "-d"
         cmd = [
             exe,
             "json-timeline",
             target_flag, str(evidence_path),
+            "-L",
             "-o", str(out_file),
             "-q",
             "--no-wizard",
@@ -101,39 +104,51 @@ def run_hayabusa(
             logger.info("No Hayabusa alerts generated for %s.", evidence_path.name)
             return
 
-        # Parse the JSON output
+        # Parse the JSON output. Hayabusa v3 json-timeline writes JSONL (one
+        # record per line) by default — even when the file as a whole *looks*
+        # like an array. Trying line-by-line first is the safe order; array
+        # parse is only a fallback for older versions that still wrap output
+        # in `[ ... ]`.
         source_file = str(evidence_path)
         alert_count = 0
         try:
             with open(out_file, "r", encoding="utf-8") as f:
-                # Hayabusa JSON output can be an array or JSONL depending on version.
-                # We'll try JSONL first, then fallback to parsing as full array.
                 content = f.read().strip()
-                if not content:
-                    return
+            if not content:
+                return
 
-                if content.startswith("["):
-                    # JSON array
-                    data = json.loads(content)
-                    for item in data:
-                        doc = parse_hayabusa_alert(item, host_name, source_file, case_id)
-                        if doc:
-                            alert_count += 1
-                            yield doc
-                else:
-                    # JSON Lines
-                    for line in content.splitlines():
-                        if line.strip():
-                            item = json.loads(line)
-                            doc = parse_hayabusa_alert(item, host_name, source_file, case_id)
-                            if doc:
-                                alert_count += 1
-                                yield doc
+            # JSONL path (Hayabusa 3.x default with --ISO-8601)
+            jsonl_ok = False
+            for line in content.splitlines():
+                line = line.strip().rstrip(",")
+                if not line or line in ("[", "]"):
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    jsonl_ok = False
+                    break
+                jsonl_ok = True
+                doc = parse_hayabusa_alert(item, host_name, source_file, case_id)
+                if doc:
+                    alert_count += 1
+                    yield doc
+
+            # Fallback: whole-file JSON array (older Hayabusa)
+            if not jsonl_ok and content.startswith("["):
+                data = json.loads(content)
+                for item in data:
+                    doc = parse_hayabusa_alert(item, host_name, source_file, case_id)
+                    if doc:
+                        alert_count += 1
+                        yield doc
 
             logger.info("Parsed %d Hayabusa alerts for %s", alert_count, host_name)
 
         except Exception as exc:
-            logger.error("Failed to parse Hayabusa output: %s", exc)
+            preview = content[:200].replace("\n", "\\n") if "content" in locals() else ""
+            logger.error("Failed to parse Hayabusa output: %s | head=%r",
+                         exc, preview)
 
 
 def parse_hayabusa_alert(
@@ -143,11 +158,15 @@ def parse_hayabusa_alert(
     case_id: str,
 ) -> dict[str, Any] | None:
     """Map a raw Hayabusa JSON alert to an ECS document."""
-    # Handle both v2 and v3 JSON structures
+    # Hayabusa 3.x uses PascalCase with no spaces (RuleTitle, EventID, Level).
+    # Older versions used "Rule Title" / "Event ID" / "Rule Level".
     timestamp = alert.get("Timestamp") or alert.get("datetime") or alert.get("date")
-    rule_title = alert.get("Rule Title") or alert.get("rule_title") or alert.get("title", "")
-    rule_level = alert.get("Rule Level") or alert.get("level", "")
-    event_id = alert.get("Event ID") or alert.get("event_id") or ""
+    rule_title = (alert.get("RuleTitle") or alert.get("Rule Title")
+                  or alert.get("rule_title") or alert.get("title", ""))
+    rule_level = (alert.get("Level") or alert.get("Rule Level")
+                  or alert.get("level", ""))
+    event_id = (alert.get("EventID") or alert.get("Event ID")
+                or alert.get("event_id") or "")
     computer = alert.get("Computer") or alert.get("computer", "")
     details = alert.get("Details") or alert.get("details", "")
 
@@ -161,7 +180,17 @@ def parse_hayabusa_alert(
     user_name = ""
     if isinstance(details, dict):
         user_name = details.get("UserName") or details.get("SubjectUserName", "")
-    
+
+    # OpenSearch dynamic mapping locks the alert.details field type to the
+    # first doc indexed. Hayabusa emits dicts for some rules and bare strings
+    # for others (e.g. "Logoff" → string) — second-type docs are rejected
+    # with a mapper_parsing_exception. JSON-stringify so the mapping stays
+    # consistent across rule types.
+    if isinstance(details, (dict, list)):
+        details_str = json.dumps(details, default=str)
+    else:
+        details_str = str(details) if details else ""
+
     # ECS Document
     doc = build_ecs_doc(
         timestamp=str(timestamp) if timestamp else None,
@@ -177,7 +206,7 @@ def parse_hayabusa_alert(
         extra={
             "rule.name": rule_title,
             "rule.level": rule_level,
-            "alert.details": details,
+            "alert.details": details_str,
         },
     )
     

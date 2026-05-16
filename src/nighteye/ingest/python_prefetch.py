@@ -1,11 +1,10 @@
-"""Pure-Python Windows Prefetch (.pf) parser — fallback when PECmd is unavailable.
+"""Windows Prefetch (.pf) parser — libscca-backed with pure-Python fallback.
 
-Parses the binary SCCA/MAM prefetch file format on Linux without
-requiring Eric Zimmerman's Windows-only PECmd tool.
-
-References:
-    - libscca / plaso prefetch format documentation
-    - MAM compression for Win8.1+ prefetch files (decompression not supported)
+Win8.1+ prefetch files are MAM-compressed (Xpress Huffman); the pure-Python
+parser only handles legacy uncompressed SCCA. libscca (pyscca, installed via
+the libscca-python3 apt package) decompresses MAM natively and exposes a
+clean object model. We try pyscca first and fall back to the binary parser
+for headers it cannot read.
 """
 
 from __future__ import annotations
@@ -16,6 +15,12 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    import pyscca  # type: ignore[import-not-found]
+    _HAVE_PYSCCA = True
+except ImportError:
+    _HAVE_PYSCCA = False
 
 logger = logging.getLogger("nighteye.ingest.python_prefetch")
 
@@ -41,6 +46,122 @@ def parse_prefetch(
     Yields:
         ECS document dicts.
     """
+    if _HAVE_PYSCCA:
+        try:
+            yield from _parse_with_pyscca(
+                path, host_name=host_name,
+                source_file=source_file, audit_id=audit_id,
+            )
+            return
+        except Exception as exc:
+            logger.debug("pyscca failed on %s, falling back: %s", path.name, exc)
+
+    yield from _parse_binary(
+        path, host_name=host_name,
+        source_file=source_file, audit_id=audit_id,
+    )
+
+
+def _parse_with_pyscca(
+    path: Path,
+    *,
+    host_name: str,
+    source_file: str,
+    audit_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Parse using libscca (handles MAM-compressed Win8.1+ prefetch)."""
+    from nighteye.ingest.ecs import build_ecs_doc
+
+    pf = pyscca.open(str(path))
+    try:
+        executable = pf.get_executable_filename() or ""
+        if not executable:
+            return
+
+        version = pf.get_format_version()
+        run_count = pf.get_run_count() or 0
+        pf_hash = pf.get_prefetch_hash() or 0
+
+        modules: list[str] = []
+        for i in range(pf.get_number_of_filenames()):
+            try:
+                fname = pf.get_filename(i)
+                if fname:
+                    modules.append(fname)
+            except Exception:
+                continue
+
+        last_runs: list[tuple[str | None, int]] = []
+        for i in range(8):
+            try:
+                dt = pf.get_last_run_time(i)
+                if dt is None:
+                    continue
+                ts = dt.isoformat().replace("+00:00", "Z")
+                last_runs.append((ts, 0))
+            except (OSError, ValueError):
+                continue
+
+        if not last_runs and run_count:
+            last_runs = [(None, 0)]
+
+        for i, (ts_iso, _) in enumerate(last_runs):
+            if modules:
+                for module_name in modules:
+                    yield build_ecs_doc(
+                        timestamp=ts_iso,
+                        host_name=host_name,
+                        event_action="process-execution-evidence",
+                        event_category="process",
+                        process_name=executable,
+                        nighteye_source_file=source_file or str(path),
+                        nighteye_audit_id=audit_id,
+                        nighteye_parser="pyscca",
+                        nighteye_canonical_type="PREFETCH",
+                        extra={
+                            "prefetch.executable": executable,
+                            "prefetch.run_count": run_count,
+                            "prefetch.run_index": i,
+                            "prefetch.last_run": ts_iso,
+                            "prefetch.loaded_module": module_name,
+                            "prefetch.hash": pf_hash,
+                            "prefetch.version": version,
+                            "prefetch.file": str(path),
+                        },
+                    )
+            else:
+                yield build_ecs_doc(
+                    timestamp=ts_iso,
+                    host_name=host_name,
+                    event_action="process-execution-evidence",
+                    event_category="process",
+                    process_name=executable,
+                    nighteye_source_file=source_file or str(path),
+                    nighteye_audit_id=audit_id,
+                    nighteye_parser="pyscca",
+                    nighteye_canonical_type="PREFETCH",
+                    extra={
+                        "prefetch.executable": executable,
+                        "prefetch.run_count": run_count,
+                        "prefetch.run_index": i,
+                        "prefetch.last_run": ts_iso,
+                        "prefetch.hash": pf_hash,
+                        "prefetch.version": version,
+                        "prefetch.file": str(path),
+                    },
+                )
+    finally:
+        pf.close()
+
+
+def _parse_binary(
+    path: Path,
+    *,
+    host_name: str,
+    source_file: str,
+    audit_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Pure-Python fallback for legacy uncompressed SCCA prefetch."""
     from nighteye.ingest.ecs import build_ecs_doc
 
     try:

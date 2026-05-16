@@ -809,10 +809,11 @@ def ingest_e01_extraction(
             stats["documents_indexed"] += len(docs)
             logger.info("  Registry: %d docs", len(docs))
 
-        # 3d: Prefetch — uses python_prefetch (header-only parser, fast,
-        # works without PECmd installed). Yields one ECS doc per
-        # (loaded_module × run_time) so the constructors can correlate
-        # execution sequence with DLL dependency.
+        # 3d: Prefetch — pyscca handles MAM-compressed Win8.1+ SCCA
+        # natively; pure-python fallback for legacy uncompressed files.
+        # Yields one ECS doc per (loaded_module × run_time) so constructors
+        # can correlate execution sequence with DLL dependency.
+        # (PECmd is Windows-only — its libraries refuse to load on Linux.)
         if result.get("prefetch"):
             from nighteye.ingest.python_prefetch import parse_prefetch
             idx = f"case-{case_id.lower()}-prefetch-{host}"

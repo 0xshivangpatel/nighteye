@@ -37,6 +37,7 @@ sudo apt-get install -y -qq \
     ewf-tools sleuthkit yara \
     python3-venv python3-pip python3-dev build-essential \
     libssl-dev libffi-dev libxml2-dev libxslt1-dev \
+    libscca-python3 \
     fuse3 dotnet-sdk-9.0 || sudo apt-get install -y -qq dotnet-sdk-8.0 || true
 ok "apt packages installed"
 
@@ -167,31 +168,21 @@ if command -v EvtxECmd >/dev/null 2>&1 && command -v MFTECmd >/dev/null 2>&1 \
 else
     EZ_DIR=/opt/EZTools
     sudo mkdir -p "$EZ_DIR"
-    EZ_URL="https://download.ericzimmermanstools.com/net9/Get-ZimmermanTools.zip"
-    log "  downloading Get-ZimmermanTools..."
-    curl -fsSL "$EZ_URL" -o /tmp/eztools.zip
-    sudo unzip -oq /tmp/eztools.zip -d "$EZ_DIR/"
-    rm -f /tmp/eztools.zip
-    # Use PowerShell-Core if installed, else manual download script
-    if command -v pwsh >/dev/null 2>&1; then
-        cd "$EZ_DIR" && sudo pwsh -Command "Get-ZimmermanTools.ps1 -Dest $EZ_DIR -NetVersion 9" || true
-        cd "$NIGHTEYE_DIR"
-    else
-        warn "PowerShell-Core (pwsh) not installed — installing now for EZ Tools downloader"
-        sudo apt-get install -y -qq powershell || sudo snap install powershell --classic 2>/dev/null || true
-        if command -v pwsh >/dev/null 2>&1; then
-            cd "$EZ_DIR" && sudo pwsh -Command "./Get-ZimmermanTools.ps1 -Dest $EZ_DIR -NetVersion 9" || true
-            cd "$NIGHTEYE_DIR"
+    # Download each tool's zip directly — Get-ZimmermanTools.ps1 is flaky and
+    # silently skips PECmd/MFTECmd/RECmd on some runs. The per-tool URLs are
+    # canonical and don't need PowerShell to drive them.
+    for tool in EvtxeCmd MFTECmd RECmd AmcacheParser PECmd; do
+        T_URL="https://download.ericzimmermanstools.com/net9/${tool}.zip"
+        log "  downloading ${tool}..."
+        if curl -fsSL "$T_URL" -o "/tmp/${tool}.zip"; then
+            sudo mkdir -p "$EZ_DIR/${tool}"
+            sudo unzip -oq "/tmp/${tool}.zip" -d "$EZ_DIR/${tool}/" 2>/dev/null || \
+                warn "${tool} unzip failed"
+            rm -f "/tmp/${tool}.zip"
         else
-            warn "Unable to install pwsh — falling back to manual EZ Tools download"
-            for tool in EvtxeCmd MFTECmd RECmd AmcacheParser PECmd; do
-                T_URL="https://download.ericzimmermanstools.com/net9/${tool}.zip"
-                curl -fsSL "$T_URL" -o "/tmp/${tool}.zip" || continue
-                sudo unzip -oq "/tmp/${tool}.zip" -d "$EZ_DIR/" 2>/dev/null || true
-                rm -f "/tmp/${tool}.zip"
-            done
+            warn "${tool} download failed"
         fi
-    fi
+    done
     # Install thin wrapper scripts to /usr/local/bin
     for tool in EvtxECmd MFTECmd RECmd AmcacheParser PECmd; do
         DLL_PATH=$(find "$EZ_DIR" -iname "${tool}.dll" 2>/dev/null | head -1)
