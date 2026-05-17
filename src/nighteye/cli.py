@@ -331,6 +331,75 @@ def cmd_entities(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent_investigate(args: argparse.Namespace) -> int:
+    """Run the autonomous MCP investigation agent over selected hypotheses."""
+    from nighteye.agent.backends import build_backend
+    from nighteye.agent.investigator import run_batch, select_hypotheses
+
+    case = get_active_case()
+    if args.case_id and (case is None or case.id != args.case_id):
+        from nighteye.case import default_cases_dir, load_case_meta
+        from nighteye.case import CaseInfo
+        case_dir = default_cases_dir() / args.case_id
+        if not case_dir.is_dir():
+            print(f"ERROR: case directory not found: {case_dir}", file=sys.stderr)
+            return 1
+        meta = load_case_meta(case_dir)
+        case = CaseInfo(
+            case_id=meta.get("case_id", args.case_id),
+            name=meta.get("name", args.case_id),
+            status=meta.get("status", "OPEN"),
+            examiner=meta.get("examiner", "unknown"),
+            case_dir=case_dir,
+            created_at=meta.get("created_at", ""),
+        )
+    if case is None:
+        print("ERROR: no active case (run `nighteye init` or pass --case-id)",
+              file=sys.stderr)
+        return 1
+
+    explicit = args.hypotheses.split(",") if args.hypotheses else None
+    hyp_ids = select_hypotheses(
+        db_path=case.graph_db, case_id=case.id,
+        explicit_ids=explicit, tier=args.tier,
+        only_new_since=args.new_since,
+        only_drafts=not bool(explicit),  # if user named IDs, take them as-is
+    )
+    if args.limit:
+        hyp_ids = hyp_ids[: args.limit]
+
+    if not hyp_ids:
+        print("No hypotheses match the selection.", file=sys.stderr)
+        return 1
+
+    backend = build_backend(args.backend, model=args.model)
+    print(f"Backend: {backend.name}  ({type(backend).__name__})")
+    print(f"Case:    {case.id}")
+    print(f"Targets: {len(hyp_ids)} hypothesis/es")
+    print(f"Budget:  {args.budget_calls} tool calls / {args.budget_seconds}s each")
+    print("=" * 60)
+
+    results = run_batch(
+        case_id=case.id, db_path=case.graph_db,
+        hypothesis_ids=hyp_ids, backend=backend,
+        budget_calls=args.budget_calls,
+        budget_seconds=args.budget_seconds,
+    )
+
+    print("=" * 60)
+    print("Summary:")
+    tally: dict[str, int] = {}
+    for r in results:
+        tally[r.verdict] = tally.get(r.verdict, 0) + 1
+        print(f"  {r.hypothesis_id[:40]:<40}  {r.verdict:<22}  "
+              f"{r.tool_calls:>2} calls  {r.elapsed_sec:>5.0f}s  "
+              f"conf={r.final_confidence}")
+    print("-" * 60)
+    for verdict, n in sorted(tally.items()):
+        print(f"  {verdict}: {n}")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Start the MCP server (port 4509) and the Portal (port 4510).
 
@@ -676,6 +745,55 @@ def main(argv: list[str] | None = None) -> int:
         help="Portal port (default: 4510)",
     )
     serve_parser.set_defaults(func=cmd_serve)
+
+    # agent investigate
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Run the autonomous MCP investigation agent",
+    )
+    agent_sub = agent_parser.add_subparsers(dest="agent_command", required=True)
+    inv_parser = agent_sub.add_parser(
+        "investigate",
+        help="Walk DRAFT hypotheses with the autonomous agent (approve/reject/insufficient)",
+    )
+    inv_parser.add_argument(
+        "--backend", choices=["auto", "api", "cli"], default="auto",
+        help="LLM backend: anthropic SDK (api), claude CLI (cli), or auto-detect",
+    )
+    inv_parser.add_argument(
+        "--model", default=None,
+        help="Override model (default: claude-opus-4-7 for api; CLI default for cli)",
+    )
+    sel = inv_parser.add_mutually_exclusive_group()
+    sel.add_argument(
+        "--hypotheses", help="Comma-separated hypothesis IDs to investigate",
+    )
+    sel.add_argument(
+        "--tier", help="Investigate only these tiers (CSV): HIGH,MEDIUM,LOW",
+    )
+    sel.add_argument(
+        "--new-since", help="ISO timestamp; investigate hypotheses staged after this",
+    )
+    sel.add_argument(
+        "--all-drafts", action="store_true",
+        help="Investigate every DRAFT hypothesis (warning: slow + costly)",
+    )
+    inv_parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Cap how many hypotheses to investigate this run",
+    )
+    inv_parser.add_argument(
+        "--budget-calls", type=int, default=25,
+        help="Per-hypothesis tool-call budget (default: 25)",
+    )
+    inv_parser.add_argument(
+        "--budget-seconds", type=int, default=300,
+        help="Per-hypothesis wall-time budget (default: 300s)",
+    )
+    inv_parser.add_argument(
+        "--case-id", default=None, help="Case ID (defaults to active case)",
+    )
+    inv_parser.set_defaults(func=cmd_agent_investigate)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
