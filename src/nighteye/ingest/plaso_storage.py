@@ -72,6 +72,153 @@ _EVENT_DATA_KEYS = (
     "ProcessCommandLine", "ProcessName", "ServiceName", "SubjectUserName",
 )
 
+# ---------------------------------------------------------------------------
+# Windows Security-channel Strings-array decoders
+# ---------------------------------------------------------------------------
+# Plaso renders winevt records with the EventData StringArray printed
+# positionally (e.g. `Strings: ['S-1-..', 'user', 'domain', ...]`). We
+# decode each known EventID back into named fields so constructors see
+# the same `winlog.event_data.LogonType` / `IpAddress` / etc. they get
+# from EvtxECmd-derived events. Positions come from Microsoft's
+# documented event schemas (EventID 4624, 4688, 4697, 4769, etc.).
+
+# Mapping: event_id (str) → list[str] of field names in order
+# Use empty string for positions we don't care to name.
+_EVENT_STRINGS_LAYOUT: dict[str, list[str]] = {
+    # 4624 - Successful logon
+    "4624": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "TargetUserSid", "TargetUserName", "TargetDomainName", "TargetLogonId",
+        "LogonType", "LogonProcessName", "AuthenticationPackageName",
+        "WorkstationName", "LogonGuid", "TransmittedServices", "LmPackageName",
+        "KeyLength", "ProcessId", "ProcessName", "IpAddress", "IpPort",
+    ],
+    # 4625 - Failed logon (same prefix as 4624 up through LogonType, then differs)
+    "4625": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "TargetUserSid", "TargetUserName", "TargetDomainName", "Status",
+        "FailureReason", "SubStatus", "LogonType", "LogonProcessName",
+        "AuthenticationPackageName", "WorkstationName", "TransmittedServices",
+        "LmPackageName", "KeyLength", "ProcessId", "ProcessName",
+        "IpAddress", "IpPort",
+    ],
+    # 4634 - Logoff
+    "4634": ["TargetUserSid", "TargetUserName", "TargetDomainName",
+             "TargetLogonId", "LogonType"],
+    # 4647 - User-initiated logoff
+    "4647": ["TargetUserSid", "TargetUserName", "TargetDomainName", "TargetLogonId"],
+    # 4648 - Explicit credential logon (RunAs)
+    "4648": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "LogonGuid", "TargetUserName", "TargetDomainName", "TargetLogonGuid",
+        "TargetServerName", "TargetInfo", "ProcessId", "ProcessName",
+        "IpAddress", "IpPort",
+    ],
+    # 4672 - Special privileges assigned to new logon
+    "4672": ["SubjectUserSid", "SubjectUserName", "SubjectDomainName",
+             "SubjectLogonId", "PrivilegeList"],
+    # 4688 - Process creation
+    "4688": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "NewProcessId", "NewProcessName", "TokenElevationType", "ProcessId",
+        "CommandLine", "TargetUserSid", "TargetUserName", "TargetDomainName",
+        "TargetLogonId", "ParentProcessName", "MandatoryLabel",
+    ],
+    # 4697 - Service installed (Security channel)
+    "4697": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "ServiceName", "ServiceFileName", "ServiceType", "ServiceStartType",
+        "ServiceAccount",
+    ],
+    # 7045 - Service installed (System channel)
+    "7045": ["ServiceName", "ImagePath", "ServiceType", "StartType", "AccountName"],
+    # 4768 - Kerberos TGT requested
+    "4768": [
+        "TargetUserName", "TargetDomainName", "TargetSid", "ServiceName",
+        "ServiceSid", "TicketOptions", "Status", "TicketEncryptionType",
+        "PreAuthType", "IpAddress", "IpPort", "CertIssuerName",
+        "CertSerialNumber", "CertThumbprint",
+    ],
+    # 4769 - Kerberos service ticket requested
+    "4769": [
+        "TargetUserName", "TargetDomainName", "ServiceName", "ServiceSid",
+        "TicketOptions", "TicketEncryptionType", "IpAddress", "IpPort",
+        "Status", "LogonGuid", "TransmittedServices",
+    ],
+    # 4770 - Kerberos service ticket renewed
+    "4770": ["TargetUserName", "TargetDomainName", "ServiceName", "ServiceSid",
+             "TicketOptions", "TicketEncryptionType"],
+    # 4776 - NTLM credential validation
+    "4776": ["PackageName", "TargetUserName", "Workstation", "Status"],
+    # 4778 - Session reconnected (RDP)
+    "4778": ["AccountName", "AccountDomain", "LogonID", "SessionName",
+             "ClientName", "ClientAddress"],
+    # 4779 - Session disconnected
+    "4779": ["AccountName", "AccountDomain", "LogonID", "SessionName",
+             "ClientName", "ClientAddress"],
+    # 4656 - Object access (LSASS handle requested)
+    "4656": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "ObjectServer", "ObjectType", "ObjectName", "HandleId", "TransactionId",
+        "AccessList", "AccessReason", "AccessMask", "PrivilegeList",
+        "RestrictedSidCount", "ProcessId", "ProcessName", "ResourceAttributes",
+    ],
+    # 4663 - Object access attempted
+    "4663": [
+        "SubjectUserSid", "SubjectUserName", "SubjectDomainName", "SubjectLogonId",
+        "ObjectServer", "ObjectType", "ObjectName", "HandleId", "AccessList",
+        "AccessMask", "ProcessId", "ProcessName", "ResourceAttributes",
+    ],
+    # 1102 - Audit log cleared
+    "1102": ["SubjectUserSid", "SubjectUserName", "SubjectDomainName",
+             "SubjectLogonId"],
+}
+
+# Regex finds the python-list-repr that plaso prints after "Strings:".
+_STRINGS_LIST_RE = re.compile(
+    r"Strings:\s*\[(.*?)\](?:\s+Computer Name|\s+Record Number|\s*$)",
+    re.DOTALL,
+)
+# Inside the list, items are single-quoted strings or `None`. Quotes can
+# contain escaped chars and commas inside paths, so we use a tokenizer
+# that respects single-quoted runs. `None` is captured in its own group
+# so positional offsets stay correct — empty positions must still
+# advance the index.
+_STRING_ITEM_RE = re.compile(r"'((?:[^'\\]|\\.)*)'|(None)|([^,\s][^,]*)")
+
+
+def _parse_strings_array(message: str, event_id: str) -> dict[str, str]:
+    """Decode plaso's `Strings: [...]` field into named EventData fields.
+
+    Returns an empty dict if no Strings list is present or no layout is
+    known for this event_id. Critical that positional integrity is
+    preserved: a `None` in the middle of the list must take its slot
+    or every subsequent field is misaligned.
+    """
+    if not message or not event_id:
+        return {}
+    layout = _EVENT_STRINGS_LAYOUT.get(event_id)
+    if not layout:
+        return {}
+    m = _STRINGS_LIST_RE.search(message)
+    if not m:
+        return {}
+    body = m.group(1)
+    items: list[str] = []
+    for tok in _STRING_ITEM_RE.finditer(body):
+        quoted, none_tok, bare = tok.group(1), tok.group(2), tok.group(3)
+        if quoted is not None:
+            items.append(quoted)
+        elif none_tok == "None":
+            items.append("")
+        elif bare:
+            items.append(bare.strip())
+    out: dict[str, str] = {}
+    for name, value in zip(layout, items):
+        if name and value not in ("", "-"):
+            out[name] = value
+    return out
+
 
 def is_psort_available() -> bool:
     """psort lives in the venv (installed via `pip install plaso`)."""
@@ -131,11 +278,29 @@ def _plaso_event_to_ecs(ev: dict[str, Any], host: str, case_id: str) -> dict[str
     if not canonical:
         canonical = "ALERT" if data_type else ""
 
-    parsed = _extract_event_data(message)
-    user = parsed.get("TargetUserName") or ev.get("user", "") or ev.get("username", "")
-    cmdline = parsed.get("ProcessCommandLine", "")
-    proc_name = parsed.get("ProcessName", "") or ev.get("process_name", "")
-    proc_path = ev.get("process_executable", "") or proc_name
+    # Two-stage extraction: positional Strings-array decoding gives us
+    # the rich EventData fields constructors need (LogonType, IpAddress,
+    # CommandLine, TargetUserName by position). Fall back to the
+    # key:value regex for non-EVTX plaso data_types.
+    strings_fields = _parse_strings_array(message, eid)
+    parsed = {**_extract_event_data(message), **strings_fields}
+
+    user = (parsed.get("TargetUserName")
+            or parsed.get("SubjectUserName")
+            or parsed.get("AccountName")
+            or ev.get("user", "") or ev.get("username", ""))
+    cmdline = (parsed.get("CommandLine")
+               or parsed.get("ProcessCommandLine", ""))
+    proc_name = (parsed.get("NewProcessName")
+                 or parsed.get("ProcessName", "")
+                 or ev.get("process_name", ""))
+    proc_path = (ev.get("process_executable", "")
+                 or parsed.get("ImagePath")
+                 or parsed.get("ServiceFileName")
+                 or proc_name)
+    remote_ip = (parsed.get("IpAddress")
+                 or parsed.get("ClientAddress", ""))
+    service_name = parsed.get("ServiceName", "")
 
     return {
         "@timestamp": ts,
@@ -167,8 +332,11 @@ def _plaso_event_to_ecs(ev: dict[str, Any], host: str, case_id: str) -> dict[str
         "process_name": proc_name,
         "process_path": proc_path,
         "registry_key": ev.get("key_path", "") or ev.get("registry_key", ""),
-        "target_file": ev.get("filename", "") or ev.get("display_name", ""),
-        "remote_ip": parsed.get("IpAddress", ""),
+        "target_file": (ev.get("filename", "")
+                         or parsed.get("ObjectName", "")
+                         or ev.get("display_name", "")),
+        "remote_ip": remote_ip,
+        "service_name": service_name,
         "alert_name": "",
         "nighteye": {
             "ingest_id": "psort-jsonl",
