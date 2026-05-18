@@ -374,12 +374,30 @@ class CanonicalNormalizer:
         return ""
 
     def _extract_user(self, doc: dict[str, Any]) -> str:
-        """Extract user name from ECS document."""
+        """Extract user name from ECS document.
+
+        ECS nested `user.name` is the primary source. Plaso-storage docs
+        carry the user as a top-level string or in `winlog.event_data.
+        TargetUserName` / `SubjectUserName` / `AccountName`, so fall back
+        through those so constructors see a populated user on both
+        EvtxECmd-derived and plaso-derived events.
+        """
         user = _get_nested_or_flat(doc, "user", "name")
-        domain = _get_nested_or_flat(doc, "user", "domain")
-        if domain and user:
-            return f"{domain}\\{user}"
-        return user or ""
+        if user:
+            domain = _get_nested_or_flat(doc, "user", "domain")
+            return f"{domain}\\{user}" if domain else user
+        # Top-level user / user_name string (plaso-storage shape)
+        if isinstance(doc.get("user"), str) and doc["user"]:
+            return doc["user"]
+        if doc.get("user_name"):
+            return doc["user_name"]
+        # winlog.event_data fallbacks (works for AUTH / Kerberos / NTLM)
+        evd = (doc.get("winlog") or {}).get("event_data") or {}
+        for key in ("TargetUserName", "SubjectUserName", "AccountName"):
+            v = evd.get(key)
+            if v:
+                return v
+        return ""
 
     def _extract_process_name(self, doc: dict[str, Any]) -> str:
         """Extract process name."""
@@ -400,8 +418,14 @@ class CanonicalNormalizer:
         return None
 
     def _extract_command_line(self, doc: dict[str, Any]) -> str:
-        """Extract command line."""
-        return _get_nested_or_flat(doc, "process", "command_line")
+        """Extract command line. Falls back to top-level and EventData."""
+        cmd = _get_nested_or_flat(doc, "process", "command_line")
+        if cmd:
+            return cmd
+        if doc.get("command_line"):
+            return doc["command_line"]
+        evd = (doc.get("winlog") or {}).get("event_data") or {}
+        return evd.get("CommandLine") or evd.get("ProcessCommandLine") or ""
 
     def _extract_file_path(self, doc: dict[str, Any]) -> str:
         """Extract file path from nested or flat ECS fields."""
@@ -412,13 +436,17 @@ class CanonicalNormalizer:
         )
 
     def _extract_remote_ip(self, doc: dict[str, Any]) -> str:
-        """Extract remote IP."""
-        # Prefer destination for outbound
+        """Extract remote IP. Falls back to top-level and EventData."""
         dst = _get_nested_or_flat(doc, "destination", "ip")
         if dst:
             return dst
-        # Fallback to source if no destination
-        return _get_nested_or_flat(doc, "source", "ip")
+        src = _get_nested_or_flat(doc, "source", "ip")
+        if src:
+            return src
+        if doc.get("remote_ip"):
+            return doc["remote_ip"]
+        evd = (doc.get("winlog") or {}).get("event_data") or {}
+        return evd.get("IpAddress") or evd.get("ClientAddress") or ""
 
     def _extract_remote_port(self, doc: dict[str, Any]) -> int | None:
         """Extract remote port."""

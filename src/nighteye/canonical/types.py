@@ -132,4 +132,19 @@ class CanonicalEvent:
             d["pid"] = self.pid
         if self.remote_port is not None:
             d["remote_port"] = self.remote_port
+        # Preserve the small structural fields the constructors look at
+        # (winlog.event_data.LogonType, process.parent.name, volatility.*,
+        # etc.) so re-loading the canonical doc reconstructs an event
+        # whose triggers can fire. We strip the heavy `message` field
+        # because it can be 1.5kb per doc and balloon the index.
+        if isinstance(self.raw_data, dict) and self.raw_data:
+            keep = {}
+            for k in ("winlog", "process", "volatility", "event",
+                      "destination", "source", "file", "registry",
+                      "service", "service_name", "user_name", "host"):
+                v = self.raw_data.get(k)
+                if v is not None:
+                    keep[k] = v
+            if keep:
+                d["raw_data"] = keep
         return d
