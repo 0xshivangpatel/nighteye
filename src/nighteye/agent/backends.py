@@ -24,6 +24,14 @@ from typing import Any
 logger = logging.getLogger("nighteye.agent.backends")
 
 
+class QuotaExhausted(RuntimeError):
+    """Raised by a backend when the LLM provider reports the user is
+    out of usage (Claude CLI Pro cap, API rate limit, etc.). The
+    investigator catches this and aborts the whole batch cleanly so
+    the operator can see the reset time without burning more attempts.
+    """
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -228,6 +236,15 @@ class CliBackend(LLMBackend):
                 "claude --print rc=%d  stderr=%r  stdout head=%r",
                 result.returncode, err[:200], out[:400],
             )
+            # Quota exhaustion looks like rc=1 with a banner on stdout
+            # ("You're out of extra usage · resets HH:MMpm (UTC)").
+            # Continuing to hammer the CLI just burns 6 seconds per
+            # hypothesis without making progress. Abort the batch so
+            # the operator sees one clear error and the reset time.
+            quota_signals = ("out of extra usage", "rate limit",
+                             "rate_limit", "quota")
+            if any(sig in out.lower() for sig in quota_signals):
+                raise QuotaExhausted(out[:400])
 
         text, tc = _parse_cli_response(out)
         return TurnResult(

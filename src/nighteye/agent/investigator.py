@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nighteye.agent.backends import LLMBackend, TurnResult, build_backend
+from nighteye.agent.backends import LLMBackend, QuotaExhausted, TurnResult, build_backend
 from nighteye.agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from nighteye.agent.tools import (
     TERMINAL_TOOLS,
@@ -246,12 +246,29 @@ def run_batch(
                 backend=backend, budget_calls=budget_calls,
                 budget_seconds=budget_seconds,
             )
+        except QuotaExhausted as exc:
+            # Provider quota is gone — every remaining hypothesis would
+            # fail identically. Abort the whole batch with one clear
+            # message so the operator sees the reset window instead of
+            # 58 spurious INSUFFICIENT verdicts.
+            logger.error(
+                "QUOTA EXHAUSTED on backend %s — aborting batch at "
+                "%d/%d. Provider message: %s",
+                backend.name, i, len(hypothesis_ids), str(exc)[:200],
+            )
+            results.append(InvestigationResult(
+                hypothesis_id=hid, verdict="QUOTA_EXHAUSTED",
+                tool_calls=0, elapsed_sec=0.0, error=str(exc)[:400],
+            ))
+            break
         except Exception as exc:
             logger.exception("Investigation failed for %s", hid)
             r = InvestigationResult(
                 hypothesis_id=hid, verdict="ERROR",
                 tool_calls=0, elapsed_sec=0.0, error=str(exc),
             )
+            results.append(r)
+            continue
         results.append(r)
         logger.info("  → %s in %.0fs (%d tool calls, conf=%s)",
                     r.verdict, r.elapsed_sec, r.tool_calls, r.final_confidence)
