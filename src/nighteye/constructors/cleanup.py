@@ -291,13 +291,24 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
             if triggers and all(t in _NOISE_TRIGGERS for t in triggers):
                 continue
 
-            # Anything else surviving the noise-aggregation pass deserves a
-            # DRAFT hypothesis. The aggregator already handled the
-            # "too-many-benign-events" reduction problem; a second filter
-            # here only hides real WEAK-strength findings (lateral move,
-            # remote exec, persistence) that the agent should triage.
-            # Wide ingest needs reduction, not censorship.
-            _ = (is_moderate_plus, has_keep_trigger)  # informational only
+            # Hypothesis seeding gate: a single-trigger WEAK cluster
+            # with no high-signal trigger is almost always noise (e.g.
+            # a lone network logon, a lone process-with-writable-path).
+            # Promoting those to hypotheses floods the agent's queue
+            # and crowds out the real multi-trigger findings.
+            # We keep:
+            #   - MODERATE or STRONG clusters (real signal weight)
+            #   - clusters whose triggers contain a keep-pattern
+            #     (lsass_access, psexec, pass_the_hash, etc. — high
+            #     signal even when alone)
+            #   - WEAK clusters with 2+ co-firing triggers (correlation
+            #     is the actual investigative value)
+            # And skip:
+            #   - WEAK clusters with only 1 trigger and no keep pattern
+            if (not is_moderate_plus
+                    and not has_keep_trigger
+                    and len(triggers) <= 1):
+                continue
 
             # Skip if hypothesis already exists for this cluster
             existing = conn.execute(
@@ -385,13 +396,23 @@ def run_cluster_cleanup(db_path: str, case_id: str, examiner: str = "nighteye") 
                     suggested_by_cluster=cluster_id,
                 )
                 actual_status = hypothesis.status.value
-                # Write MCP-style HYPOTHESIS_RECORDED journal entry
+                # Write MCP-style HYPOTHESIS_RECORDED journal entry.
+                # entry_id must be unique across re-runs against the same
+                # DB — append a microsecond timestamp + 6 random hex
+                # chars so successive cleanup passes don't collide on a
+                # journal row left over from a deleted-and-reseeded
+                # hypothesis.
+                import secrets
+                ts_compact = datetime.now(timezone.utc).strftime(
+                    "%Y%m%d%H%M%S%f")
+                entry_id = (f"hyprec-{case_id}-{hypothesis_id[-16:]}-"
+                            f"{ts_compact}-{secrets.token_hex(3)}")
                 execute_with_retry(
                     conn,
                     """INSERT INTO journal (entry_id, case_id, timestamp, entry_type,
                        summary, details, agent_session_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (f"hyprec-{case_id}-{hypothesis_id[-16:]}",
+                    (entry_id,
                      case_id, now, "HYPOTHESIS_RECORDED",
                      f"Recorded hypothesis: {title[:80]}",
                      json.dumps({"hypothesis_id": hypothesis_id, "status": actual_status,
