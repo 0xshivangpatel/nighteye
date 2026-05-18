@@ -201,10 +201,34 @@ class CliBackend(LLMBackend):
         cmd = [self.cli, "--print"]
         if self.model:
             cmd += ["--model", self.model]
-        result = subprocess.run(
-            cmd, input=prompt, capture_output=True, text=True, timeout=300,
-        )
+        try:
+            result = subprocess.run(
+                cmd, input=prompt, capture_output=True, text=True, timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logger.warning("claude --print timed out after 300s (prompt %d chars)",
+                           len(prompt))
+            raise
+
         out = (result.stdout or "").strip()
+        err = (result.stderr or "").strip()
+        # Surface CLI failures explicitly — empty stdout from `claude
+        # --print` means either a rate-limit, an auth issue, or an
+        # oversized prompt. Without this log it looked like the model
+        # just stopped responding.
+        if not out:
+            preview_err = err[:400].replace("\n", " | ") if err else "(none)"
+            logger.warning(
+                "claude --print returned empty stdout (rc=%s, prompt=%d chars). "
+                "stderr=%r",
+                result.returncode, len(prompt), preview_err,
+            )
+        elif result.returncode != 0:
+            logger.warning(
+                "claude --print rc=%d  stderr=%r  stdout head=%r",
+                result.returncode, err[:200], out[:400],
+            )
+
         text, tc = _parse_cli_response(out)
         return TurnResult(
             text=text,

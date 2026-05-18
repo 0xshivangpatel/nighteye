@@ -359,14 +359,14 @@ def build_dispatch(case_id: str, db_path: str) -> dict[str, Callable[..., Any]]:
         "get_hypothesis_details": _with_db_only(hypothesis_tools.get_hypothesis_details),
         "approve_hypothesis":     _with_db_only(hypothesis_tools.approve_hypothesis),
         "reject_hypothesis":      _with_db_only(hypothesis_tools.reject_hypothesis),
-        # mark_insufficient_evidence has a heavier signature; we wrap it
-        "mark_insufficient_evidence": lambda **k: hypothesis_tools.mark_insufficient_evidence(
-            title=k.get("title", f"Insufficient evidence for {k['hypothesis_id']}"),
-            observation=k.get("reason", ""),
-            interpretation=k.get("reason", ""),
-            technique_ids=k.get("technique_ids", []),
+        # The MCP `mark_insufficient_evidence` creates a NEW hypothesis with
+        # INSUFFICIENT_EVIDENCE status — wrong shape for an agent terminal
+        # decision, which should flip the EXISTING DRAFT it's working on.
+        # Mutate the existing row in place instead.
+        "mark_insufficient_evidence": lambda **k: _mark_existing_insufficient(
             db_path=db_path,
-            examiner=k.get("examiner", "auto-investigator-v1"),
+            hypothesis_id=k["hypothesis_id"],
+            reason=k.get("reason", "Insufficient evidence after agent review"),
         ),
         # Cluster context
         "get_cluster_details":          _with_db_only(cluster_tools.get_cluster_details),
@@ -399,6 +399,44 @@ _TOOL_ARG_WHITELIST: dict[str, set[str]] = {
     spec["name"]: set(spec["input_schema"].get("properties", {}).keys())
     for spec in TOOL_SPECS
 }
+
+
+def _mark_existing_insufficient(
+    db_path: str, hypothesis_id: str, reason: str,
+) -> dict[str, Any]:
+    """Flip an existing DRAFT hypothesis to INSUFFICIENT_EVIDENCE.
+
+    The MCP `mark_insufficient_evidence` tool creates a brand-new
+    hypothesis with that status — useful for examiner-authored
+    insufficient findings, but wrong for an agent terminal decision
+    which should mutate the DRAFT it was investigating.
+    """
+    from datetime import datetime, timezone
+    from nighteye.db import connect
+
+    now = datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM hypotheses WHERE hypothesis_id = ?",
+            (hypothesis_id,),
+        ).fetchone()
+        if row is None:
+            return {"success": False,
+                    "error": f"Hypothesis not found: {hypothesis_id}"}
+        if row["status"] in ("APPROVED", "REJECTED"):
+            return {"success": False,
+                    "error": f"Cannot mark insufficient — already {row['status']}"}
+        conn.execute(
+            """UPDATE hypotheses
+                  SET status = 'INSUFFICIENT_EVIDENCE',
+                      rejection_reason = ?,
+                      modified_at = ?,
+                      challenged_at = COALESCE(challenged_at, ?)
+                WHERE hypothesis_id = ?""",
+            (reason, now, now, hypothesis_id),
+        )
+    return {"success": True, "hypothesis_id": hypothesis_id,
+            "status": "INSUFFICIENT_EVIDENCE", "reason": reason}
 
 
 def execute_tool(
